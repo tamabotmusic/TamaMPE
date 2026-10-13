@@ -259,6 +259,8 @@ if core && [ $TABLES = 1 ]; then
     t "lower-zone MPE MIDI notes: FIFO, sustain, cleanup and expression isolation" mpe_notes_test -O1 $FW
     t "FM6 MPE bend: per-voice pitch, RPN sensitivity and reuse snapshots" mpe_bend_test -O1 $FW
     t "FM6 MPE bend: real dual-core rendering matches serial PCM" mpe_bend_dual_test -O2 $FW -pthread
+    t "FM6 MPE pressure: independent amplitude, snapshots and AMS isolation" mpe_pressure_test -O1 $FW
+    t "FM6 MPE pressure: serial/dual-core PCM equality with bend" mpe_pressure_dual_test -O2 $FW -pthread
     t "MIDI timing: quantized TRS/USB recording, audio timeline, tempo changes and timer wrap" midi_timing_test -O1 $FW
     t "MIDI recording: raw events, quantization at take end, independent releases, banks and capacity" recording_test \
         -O1 $FW

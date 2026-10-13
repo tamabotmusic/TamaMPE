@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Included by midi_control.c. CPU0/event context; USB and TRS share this zone.
  * Zero-initialized/off by default. RPN 6 on channel 1 binds the selected FM6
- * POLY track until reconfiguration. Pitch bend only; no recording or transforms.
+ * POLY track until reconfiguration. Bend/local pressure; no recording or transforms.
  * FIFO per (channel, original note), including stolen notes. Panic/reconfiguration
  * starts a new session: MIDI 1.0 cannot identify an old matching Note Off then. */
 typedef struct {
@@ -15,6 +15,7 @@ typedef struct {
     uint8_t semis, cents;
 } mpe_bend_channel_t;
 static mpe_bend_channel_t mpe_bend_ch[16];
+static uint8_t mpe_pressure_ch[16]; /* initialized to neutral at session start */
 static int32_t mpe_master_bend;  /* resolved master contribution to this session */
 static struct {
     uint16_t pedals;             /* member pedal bits; master pedal is separate */
@@ -22,6 +23,29 @@ static struct {
 } mpe_zone;
 
 static int mpe_member(uint32_t ch) { return ch && ch <= mpe_zone.members; }
+static uint16_t mpe_pressure_level(uint32_t value)
+{
+    return (uint16_t)((value * 32768u + 63u) / 127u);
+}
+static void mpe_pressure_update(uint32_t ch, uint32_t value)
+{
+    if (!ch) return; /* no master pressure policy yet; never feed shared DX7 AT */
+    mpe_pressure_ch[ch] = (uint8_t)value;
+    note_id_t id = mpe_bend_ch[ch].latest;
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++) {
+        mpe_owner_t *o = &mpe_owner[i];
+        if (!id || o->id != id || o->released) continue;
+        track_t *t = &trk[o->track];
+        for (uint32_t k = 0; k < NVOICE; k++) {
+            voice_t *v = &t->v[k];
+            if (v->note_id == id && v->active && v->gate) {
+                v->mpe_pressure = (uint8_t)value;
+                v->mpe_pressure_target = mpe_pressure_level(value);
+            }
+        }
+        break;
+    }
+}
 static int32_t mpe_bend_value(uint32_t ch)
 {
     const mpe_bend_channel_t *c = &mpe_bend_ch[ch];
@@ -90,8 +114,10 @@ static void mpe_clear(int silence)
     for (uint32_t i = 0; i < NOTE_ID_CAP; i++) mpe_end(&mpe_owner[i], silence);
     mpe_zone.pedals = mpe_zone.master_pedal = 0;
     mpe_master_bend = 0;
-    for (uint32_t ch = 0; ch < 16u; ch++)
+    for (uint32_t ch = 0; ch < 16u; ch++) {
         mpe_bend_ch[ch].latest = mpe_bend_ch[ch].raw = 0;
+        mpe_pressure_ch[ch] = 0;
+    }
 }
 static void mpe_forget_track(uint32_t track)
 {
@@ -179,6 +205,8 @@ static void mpe_note(uint32_t ch, uint32_t note, uint32_t vel)
         if (t->v[i].note_id == id) {
             t->v[i].mpe_bend = 2;
             t->v[i].mpe_bend_q24 = t->v[i].mpe_bend_target = bend;
+            t->v[i].mpe_pressure = mpe_pressure_ch[ch];
+            t->v[i].mpe_pressure_level = t->v[i].mpe_pressure_target = mpe_pressure_level(mpe_pressure_ch[ch]);
         }
 }
 static void mpe_pedal_up(uint32_t ch)
@@ -198,6 +226,8 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
     } else if (st == 0xE0u) {
         mpe_bend_ch[ch].raw = (int16_t)((int32_t)(d1 | (d2 << 7)) - 8192);
         mpe_bend_update(ch);
+    } else if (st == 0xD0u) {
+        mpe_pressure_update(ch, d1);
     } else if (st == 0xB0u) {
         midi_channel_t *c = midi_channel(ch);
         switch (d1) {
@@ -233,6 +263,7 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
             }
             break;
         case 121:
+            mpe_pressure_update(ch, 0); /* member neutral; released snapshots remain frozen */
             mpe_bend_ch[ch].raw = 0;
             mpe_bend_update(ch); /* centre applicable bend, retain sensitivity */
             c->rpn_msb = c->rpn_lsb = 127;
@@ -242,7 +273,7 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
         default: break;
         }
     }
-    /* Reserved zone channels cannot edit shared patches/controllers. Pressure,
-     * CC74 and all other unsupported controls are consumed here. */
+    /* Reserved zone channels cannot edit shared patches/controllers. CC74 and
+     * all other unsupported controls are consumed here; master pressure ignored. */
     return 1;
 }

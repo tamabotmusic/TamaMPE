@@ -1,8 +1,8 @@
 # TamaMPE: first MPE note input
 
-This implements note ownership and independent FM6 pitch bend, not full MPE.
-Channel Pressure, CC74 and other unsupported messages on reserved zone channels
-are consumed without changing track controls or DX7 programs.
+This implements note ownership, independent FM6 pitch bend and local Channel
+Pressure timbre. CC74 and other unsupported messages on reserved zone
+channels are consumed without changing track controls or DX7 programs.
 
 ## Activation
 
@@ -39,8 +39,8 @@ A released note remains held while either applicable pedal is down. CC123
 releases the applicable keys and respects sustain. CC120 silences and discards
 the applicable owners regardless of sustain. CC121 releases deferred notes by
 resetting applicable pedals; on the master it resets all zone pedals. It also
-centres the applicable bend while preserving sensitivity. Pressure/timbre
-remain unsupported. Master Note On/Off messages are consumed.
+centres the applicable bend while preserving sensitivity and restores a
+still-keyed member note to zero pressure. Master pressure remains ignored. Master Note On/Off messages are consumed.
 
 Track panic, engine/mode changes, FM6 preset reload or native transpose change,
 MPE reconfiguration/disable, and MIDI queue overflow retire affected identities.
@@ -67,7 +67,7 @@ and pitch. It can release a new matching note. There is no channel quarantine.
   track tuning still apply. Physical keyboard and nonreserved MIDI channels
   continue through the original paths.
 - An identity is not a voice index, preserving room for future engines and Layer.
-  Prophet, Layer, Smart Macros, pressure and timbre expression are not implemented here.
+  Prophet, Layer, Smart Macros and timbre expression are not implemented here.
 
 ## Independent FM6 pitch bend
 
@@ -98,3 +98,45 @@ settings and shared controller path are unchanged. No DX7 patch bytes are edited
 Large ranges can move operator frequencies outside the audible/Nyquist range;
 the existing FM6 frequency/aliasing behavior still applies. This feature does not
 add oversampling or change the DX7 engine's frequency law. USB/TRS remain shared.
+
+## Independent FM6 Channel Pressure (provisional timbre destination)
+
+Member Channel Pressure (0xD0) updates only the latest still-keyed instance for
+that channel. Zero and absence of messages are neutral: no output gain or patch
+changes. Raw pressure is stored separately from its smoothed source value for
+future programmable destinations. CC74 remains reserved and unimplemented.
+Master pressure is ignored; conventional channel aftertouch is unchanged.
+
+The default assignment raises only enabled, nonzero-level, active modulators,
+after AMS. It leaves carriers and shared pmod/amod/emod/AMS caches untouched.
+A finished envelope or an operator below the native/post-AMS silent threshold
+cannot be resurrected. Voice completion uses the original envelopes.
+
+FM6 levels are Q24 log2 amplitude. Maximum pressure adds 0.5 log2 units
+(128 internal microsteps): sqrt(2), +3.0103 dB in MODERN modulator amplitude.
+MARK I attenuation changes by 512 codes; OPL quantizes its attenuation steps.
+This is NOT +3 dB of audible output. Pressure 64 supplies approximately half
+that offset. Computed levels remain within the existing 0..20 Q24 bounds.
+
+The source approaches its target monotonically on FM6's 64-sample control grid
+(~5 ms time constant), with exact landing. Existing operator gain ramps smooth
+samples. No new sample loop or output-gain compensation is used. The bounded
+pressure-level helper executes on CPU0 in XIP via the existing far-call convention,
+conserving the scarce DSP SRAM. CPU1 still consumes the prepared voice plan.
+
+Key release freezes pressure targets, including sustain/release tails. Channel
+reuse cannot retarget older instances. A new note initializes from cached pressure.
+CC121 restores the latest still-keyed member to zero. Session cleanup resets
+channel caches to zero; FIFO bookkeeping remains intact for stolen notes.
+
+Response depends on the preset and algorithm. Controlled MODERN fixtures responded in
+31/32 algorithms; the all-carrier algorithm remained unchanged. In eight tested
+factory DX7 programs, WOOD BARS and DRAWBARS had no measured response; TINE EP and NYLON PICK
+had weak response in the tested note/window. The response does not compensate
+by adding output gain. INIT without active modulators also remains unchanged.
+
+Adding harmonics can change RMS, peaks and aliasing despite unchanged carriers.
+The existing engine/mixer limits still apply; there is no universal loudness or
+anti-aliasing guarantee. Device listening/timing and voice-steal transitions still
+need hardware validation. The standard build is validated, not every optional
+resident/overclock profile.

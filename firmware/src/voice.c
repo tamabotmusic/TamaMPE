@@ -372,6 +372,8 @@ static void voice_start(track_t *t, voice_t *v, uint32_t note, uint32_t vel, int
     v->note_id = 0; /* any restart invalidates the previous slot association */
     v->mpe_bend = 0;
     v->mpe_bend_q24 = v->mpe_bend_target = 0;
+    v->mpe_pressure = 0;
+    v->mpe_pressure_level = v->mpe_pressure_target = 0;
     v->note = (uint8_t)note;
     v->vel = (uint8_t)vel;
     v->gate = 1;

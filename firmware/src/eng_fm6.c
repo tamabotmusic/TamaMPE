@@ -698,7 +698,16 @@ static inline void fm6_mpe_bend_tick(voice_t *v)
                              (d > -4 ? d : (d - 3) / 4);
 }
 
-static __attribute__((noinline,section(".dsp_text"))) void fm6_control_ram(track_t *t, voice_t *v, fm6_voice_t *s, const vmod_t *m, fm6_part_t *P, int32_t tune)
+/* Control-rate pressure adjustment in XIP: DSP SRAM is scarce. The caller uses
+ * the existing volatile far-call convention; no operator sample loop changes. */
+static __attribute__((noinline)) int32_t fm6_pressure_operator(uint32_t pressure,
+                                                             const fm6_eg_t *env, int32_t level, uint32_t output_level)
+{
+    if (!output_level || env->ix >= 4u || env->level < FM6_SILENT || level < FM6_SILENT) return level;
+    return fm6_clamp(level + (int32_t)(pressure << 8), 0, 20 << 24);
+}
+
+static __attribute__((noinline,section(".dsp_text"))) void fm6_control_ram(track_t *t, voice_t *v, fm6_voice_t *s, const vmod_t *m, fm6_part_t *P, int32_t tune, uint32_t pressure)
 {
     uint32_t tr = (uint32_t)(t - trk) % NTRK, alg, k, dead = 1;
     const uint8_t *ed = fm6_ed(t);
@@ -773,6 +782,13 @@ static __attribute__((noinline,section(".dsp_text"))) void fm6_control_ram(track
         }
         if (!car && mod)
             level = fm6_clamp(level + mod, 0, 20 << 24);
+        /* Q24 log2 amplitude: +0.5 at full pressure = 2^0.5, +3.0103 dB
+         * in the modulator, NOT in audible output. After AMS, per voice only.
+         * Never lift zero-level, switched-off, quiet or finished operators. */
+        if (!car && pressure) {
+            int32_t (*volatile apply)(uint32_t, const fm6_eg_t *, int32_t, uint32_t) = fm6_pressure_operator;
+            level = apply(pressure, &s->eg[k], level, op[FP_OL]);
+        }
         lv[k] = level;
     }
     for (k = 0; k < 6u; k++) {                           /* the output operators all gone for good? */
@@ -791,9 +807,15 @@ static __attribute__((noinline,section(".dsp_text"))) void fm6_control_ram(track
  * envelope, frequency and operator planning work shares resident code. */
 static void fm6_control(track_t *t, voice_t *v, fm6_voice_t *s, const vmod_t *m)
 {
+    if (v->mpe_bend) {
+        int32_t d = (int32_t)v->mpe_pressure_target - v->mpe_pressure_level;
+        v->mpe_pressure_level += d > 0 ? (d < 4 ? d : (d + 3) / 4) :
+                                         (d > -4 ? d : (d - 3) / 4);
+    }
     fm6_mpe_bend_tick(v); /* CPU0 control path; keep the helper out of scarce DSP SRAM */
-    void (*volatile run)(track_t *, voice_t *, fm6_voice_t *, const vmod_t *, fm6_part_t *, int32_t) = fm6_control_ram;
-    run(t, v, s, m, FM6P(t), song.g[G_TUNE] * 13981 + tuning_log());
+    void (*volatile run)(track_t *, voice_t *, fm6_voice_t *, const vmod_t *, fm6_part_t *, int32_t, uint32_t) = fm6_control_ram;
+    run(t, v, s, m, FM6P(t), song.g[G_TUNE] * 13981 + tuning_log(),
+        v->mpe_bend ? v->mpe_pressure_level : 0u);
 }
 
 /* nothing moves a voice at rest: no LFO or controller pitch (PMS 0, or no depth), no amplitude
