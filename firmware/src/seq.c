@@ -1163,10 +1163,12 @@ static void events_block(uint32_t n)
         }
         transport_req = 0;
     }
+    mpe_maintenance();
     pr = panic_req;
     panic_req = 0;
     if (midi_in_overflow) {                            /* a lost note-off must never leave a held note */
         mi_r = mi_w;
+        mpe_clear(1);
         memset(midi_sel_on, 0, sizeof midi_sel_on);
         memset(midi_ch, 0, sizeof midi_ch);
         memset(midi_owners, 0, sizeof midi_owners);

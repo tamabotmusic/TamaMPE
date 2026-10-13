@@ -13,6 +13,8 @@ typedef struct {
     uint8_t rpn_msb, rpn_lsb;
 } midi_channel_t;
 static midi_channel_t midi_ch[16];
+static void mpe_forget_track(uint32_t track);
+static int mpe_track_held(uint32_t track);
 /* A note's owner, a nibble per note (two notes a byte): bits 0..2 track + 1, bit 3 key released, held by its
  * channel's pedal. mn_get / mn_set speak the byte form: track + 1, MIDI_PEDAL_NOTE */
 static uint8_t midi_sel_on[16][64];
@@ -192,6 +194,7 @@ static void midi_pedal_up(uint32_t ch)
 static void __attribute__((noinline)) midi_forget_track(uint32_t track)
 {
     uint32_t ch, note;
+    mpe_forget_track(track);
     memset(live_held[track], 0, sizeof live_held[track]);
     step_midi_edge(track, 0, 2, 0, 0);          /* one UI release for the whole track */
     for (ch = 0; ch < 16u; ch++) {
@@ -225,7 +228,7 @@ static void midi_silence_track(uint32_t track)
 static int midi_track_held(uint32_t track)
 {
     uint32_t k;
-    if (midi_owners[track])
+    if (midi_owners[track] || mpe_track_held(track))
         return 1;
     for (k = 0; k < 27u; k++)
         if ((fm1_in.notes & (1u << k)) && kb_trk[k] == track)
@@ -269,6 +272,9 @@ static __attribute__((noinline)) void midi_parameter(track_t *t,uint32_t cc,uint
     if(id==P_PAN)v=(int32_t)value-64;
     t->p[id]=(int16_t)v;motion_capture(t,id,v);
 }
+/* Lower-zone note ownership; deliberately separate from conventional MIDI. */
+#include "mpe_notes.c"
+
 static void midi_control(uint32_t ch, uint32_t cc, uint32_t value)
 {
     midi_channel_t *c = midi_channel(ch);
@@ -314,6 +320,10 @@ static void midi_control(uint32_t ch, uint32_t cc, uint32_t value)
         c->rpn_msb = c->rpn_lsb = 127;
         break;
     case 6: case 38:
+        if (!ch && cc == 6u && !c->rpn_msb && c->rpn_lsb == 6u) {
+            mpe_configure(value);
+            break;
+        }
         if (!c->rpn_msb && !c->rpn_lsb) {           /* RPN 0: +/-0..24 semitones, 0..99 cents */
             if (cc == 6u)
                 c->semis = (uint8_t)(value > 24u ? 24u : value);
@@ -329,6 +339,7 @@ static void midi_control(uint32_t ch, uint32_t cc, uint32_t value)
 /* Keep the occasional controller/panic dispatch outside the hot rendering loop. */
 static void __attribute__((noinline)) midi_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
 {
+    if (mpe_event(st, ch, d1, d2)) return;
     if (st == 0x90u || st == 0x80u)
         midi_note_event(ch, d1, st == 0x90u ? d2 : 0);
     else if (st == 0xE0u) {
