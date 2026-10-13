@@ -174,6 +174,8 @@ enum { Q_OFF, Q_SNAP, Q_WHITE, Q_ALL, Q_MPC };  /* P_QUANT (seq.c kb_map, midi_m
 typedef uint32_t note_id_t; /* runtime-only note instance; zero is the conventional route */
 typedef struct {
     note_id_t note_id;
+    int32_t mpe_bend_q24, mpe_bend_target; /* independent expression, Q24 octaves */
+    uint8_t mpe_bend;            /* 0 conventional, 1 frozen session, 2 live MPE master */
     uint8_t side; /* stereo spread side, retained while sounding */
     uint8_t note, vel, gate, active;
     uint8_t stage;               /* env: 0 off, 1 attack, 2 decay/sustain, 3 release */

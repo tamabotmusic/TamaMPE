@@ -61,6 +61,7 @@ static void setup(void)
     configure(3);
     assert(mpe_zone.members == 3 && mpe_zone.track == 0);
 }
+#ifndef MPE_NOTES_NO_MAIN
 int main(void)
 {
     setup();
@@ -175,3 +176,5 @@ int main(void)
            sizeof mpe_owner, sizeof mpe_zone, sizeof note_ids, sizeof note_serial);
     return 0;
 }
+
+#endif

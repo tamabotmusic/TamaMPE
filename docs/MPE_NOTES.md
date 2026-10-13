@@ -1,8 +1,8 @@
 # TamaMPE: first MPE note input
 
-This is note ownership only, not full expressive MPE. Pitch bend, Channel
-Pressure, CC74 and other unsupported messages on reserved zone channels are
-consumed without changing track controls or DX7 programs.
+This implements note ownership and independent FM6 pitch bend, not full MPE.
+Channel Pressure, CC74 and other unsupported messages on reserved zone channels
+are consumed without changing track controls or DX7 programs.
 
 ## Activation
 
@@ -38,8 +38,9 @@ Master sustain applies to the zone; member sustain applies to that channel.
 A released note remains held while either applicable pedal is down. CC123
 releases the applicable keys and respects sustain. CC120 silences and discards
 the applicable owners regardless of sustain. CC121 releases deferred notes by
-resetting applicable pedals; on the master it resets all zone pedals. Other
-expression remains unsupported. Master Note On/Off messages are consumed.
+resetting applicable pedals; on the master it resets all zone pedals. It also
+centres the applicable bend while preserving sensitivity. Pressure/timbre
+remain unsupported. Master Note On/Off messages are consumed.
 
 Track panic, engine/mode changes, FM6 preset reload or native transpose change,
 MPE reconfiguration/disable, and MIDI queue overflow retire affected identities.
@@ -66,4 +67,34 @@ and pitch. It can release a new matching note. There is no channel quarantine.
   track tuning still apply. Physical keyboard and nonreserved MIDI channels
   continue through the original paths.
 - An identity is not a voice index, preserving room for future engines and Layer.
-  Prophet, Layer, Smart Macros and expressive MPE are not implemented here.
+  Prophet, Layer, Smart Macros, pressure and timbre expression are not implemented here.
+
+## Independent FM6 pitch bend
+
+Member bend uses the MIDI 14-bit value, with exact negative/positive endpoints
+and centre. Initial sensitivity is +/-48 semitones on members and +/-2 on the
+master. RPN 0 (CC101=0, CC100=0) sets each zone channel independently: CC6 sets
+0–127 semitones and CC38 sets cents, clamped to 99. These settings are runtime
+MPE state, separate from conventional RPN state and DX7 function settings.
+Activation/reconfiguration restores the initial ranges. Panic resets bend
+values but retains configured sensitivities. NRPN selection and RPN Null cancel
+RPN data entry as usual.
+
+Each voice keeps its own target/current bend in Q24 octaves. Member expression
+updates only the channel's latest still-keyed instance; older overlapping notes
+and notes whose keys have been released retain their own snapshots, including
+sustain and release tails. No fallback to an earlier note occurs when the latest
+one ends. Bend arriving before Note On initializes the next instance.
+Master bend adds a separate contribution to current-session MPE voices, including
+release tails, without touching conventional voices on the same track.
+Session reset freezes old release tails so a new session cannot retune them.
+
+FM6 applies this bend once, to ratio and fixed operators, on CPU0's 64-sample
+control grid, with a monotonic smoothing ramp (~5 ms time constant) and exact
+landing. It does not reset oscillator phases. Note On starts at the cached bend;
+ongoing gestures use smoothing. The existing conventional FM6 bend range/step
+settings and shared controller path are unchanged. No DX7 patch bytes are edited.
+
+Large ranges can move operator frequencies outside the audible/Nyquist range;
+the existing FM6 frequency/aliasing behavior still applies. This feature does not
+add oversampling or change the DX7 engine's frequency law. USB/TRS remain shared.

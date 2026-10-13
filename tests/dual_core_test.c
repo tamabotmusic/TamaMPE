@@ -280,6 +280,7 @@ static void shared_bus_case(int parallel,uint32_t type)
     }
     for(uint32_t i=G_MFXTYPE;i<G_COUNT;i++)song.g[i]=GP[i].def;memset(fx_state,0,sizeof fx_state);serial_render=0;
 }
+#ifndef DUAL_CORE_TEST_NO_MAIN
 int main(void)
 {
     pthread_t thread;
@@ -340,3 +341,5 @@ int main(void)
     printf("dual-core: 1536 FM6 + %u Prophet serial/concurrent cases identical; %u FM6 / %u Prophet pairs; eight-voice allocation, retire mid-song, busy/offline/wrap ok\n", prophet_cases,fm6_pairs,p5_pairs);
     return 0;
 }
+
+#endif

@@ -370,6 +370,8 @@ static void voice_start(track_t *t, voice_t *v, uint32_t note, uint32_t vel, int
     uint32_t keep = e->keep;
     voice_was = (uint8_t)(!v->active ? 0u : v->gate ? 2u : 1u);
     v->note_id = 0; /* any restart invalidates the previous slot association */
+    v->mpe_bend = 0;
+    v->mpe_bend_q24 = v->mpe_bend_target = 0;
     v->note = (uint8_t)note;
     v->vel = (uint8_t)vel;
     v->gate = 1;
@@ -431,6 +433,7 @@ static void mono_play(track_t *t, uint32_t note, uint32_t vel, int retrig, int g
             }
         } else {                                            /* legato: new pitch, same envelope */
             v->note_id = 0;                                 /* conventional legato reassigns the slot */
+            v->mpe_bend = 0;
             v->note = (uint8_t)note;
             voice_scale_pitch(t, v, note);
             v->mvel = t->m_vel;
@@ -793,10 +796,13 @@ static __attribute__((noinline)) uint32_t track_render_audio(track_t *t, int32_t
         }
         if (!env && !m.amp0 && v->stage == 2 && !e->sampled)
             continue;                                   /* held at a silent sustain (SUS 0): nothing to render */
-        pitch = v->pitch_cur + tune + bend16 + ((lfo * p[P_LD_PIT] * 3) >> 15) + ((m.envq15 * p[P_ED_PIT] * 3) >> 15);
+        /* FM6 resolves MPE bend in its own log-frequency path. Exclude the
+         * conventional track bend before clamping, not only from m.plog. */
+        int32_t vbend16 = v->mpe_bend ? 0 : bend16, vbend_fine = v->mpe_bend ? 0 : bend_fine;
+        pitch = v->pitch_cur + tune + vbend16 + ((lfo * p[P_LD_PIT] * 3) >> 15) + ((m.envq15 * p[P_ED_PIT] * 3) >> 15);
         m.pitch16 = clamp(pitch, 0, 2047);
         m.inc = tuned_pitch_inc(m.pitch16);
-        m.fine = v->fine + v->scale_fine + tune_fine + bend_fine;
+        m.fine = v->fine + v->scale_fine + tune_fine + vbend_fine;
         if (m.fine)             /* residual below 1/16 semitone */
             m.inc += (uint32_t)((int32_t)(m.inc >> 12) * m.fine);
         m.cutoff = ((lfo * p[P_LD_FLT]) >> 7) + ((m.envq15 * p[P_ED_FLT]) >> 7);
@@ -809,7 +815,7 @@ static __attribute__((noinline)) uint32_t track_render_audio(track_t *t, int32_t
         if (mod.on)                                     /* the modulation matrix (mod.c) */
             mod_voice(t, v, &m, m.fine);
         /* 1/16 st and 1/4096 -> Q24 octaves: the voice's own offset (the matrix's pitch too), without TUNE and bend */
-        m.plog = (m.pitch16 - tune - bend16 - (int32_t)v->note * 16) * 87381 + (m.fine - tune_fine - bend_fine) * 5909;
+        m.plog = (m.pitch16 - tune - vbend16 - (int32_t)v->note * 16) * 87381 + (m.fine - tune_fine - vbend_fine) * 5909;
         e->render(t, v, spread_on > v->side ? spread_buf : out, n, &m);
         nr++;
     }
