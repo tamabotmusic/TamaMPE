@@ -15,6 +15,50 @@
  * over one block (stage 4: the envelope goes to 0, the block's amplitude ramp
  * declicks it); one of the part's own is restarted in place, as before. Extra UNISON
  * voices only start when there is room. */
+/* Identity handles belong to logical notes, not slots or engines. CPU0/audio-event
+ * context only. One handle may be attached to several tracks (future Layer).
+ * A retired handle never becomes valid again: refuse serial exhaustion rather
+ * than wrap. Stolen notes retain their handle until the input retires it. */
+#define NOTE_ID_CAP (NPART * NVOICE)
+static note_id_t note_ids[NOTE_ID_CAP];
+static uint32_t note_serial;
+static int note_identity_valid(note_id_t id)
+{
+    if (!id) return 0;
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++)
+        if (note_ids[i] == id) return 1;
+    return 0;
+}
+static note_id_t note_identity_new(uint32_t channel)
+{
+    if (channel >= 16u || note_serial == 0x0fffffffu) return 0;
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++)
+        if (!note_ids[i]) {
+            note_id_t id = (++note_serial << 4) | channel;
+            note_ids[i] = id;
+            return id;
+        }
+    return 0;
+}
+static void trk_note_off_id(track_t *t, note_id_t id)
+{
+    if (!note_identity_valid(id)) return;
+    for (uint32_t i = 0; i < NVOICE; i++) {
+        voice_t *v = &t->v[i];
+        if (v->note_id == id) {
+            v->note_id = 0;
+            if (v->active && v->gate) { v->gate = 0; v->stage = 3; }
+        }
+    }
+}
+static void note_identity_end(note_id_t id)
+{
+    if (!note_identity_valid(id)) return;
+    for (uint32_t i = 0; i < NPART; i++) trk_note_off_id(&trk[i], id);
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++)
+        if (note_ids[i] == id) { note_ids[i] = 0; break; }
+}
+
 static uint32_t vage;                                   /* voice ages: one clock for every part */
 static int32_t lfo_wave(track_t *t, uint32_t ph)
 {
@@ -179,6 +223,7 @@ static uint32_t voice_kills_part[NPART];                /* identify the audible 
 static void voice_kill(voice_t *v)                      /* fade out over the next block (env_tick stage 4) */
 {
     uint32_t part = ((uintptr_t)v - (uintptr_t)trk) / sizeof(track_t);
+    v->note_id = 0;
     v->gate = 0;
     v->stage = 4;
     voice_kills++;
@@ -214,7 +259,7 @@ static voice_t *voice_reuse(track_t *t, voice_t *v)
  * held one, never the lowest held note (the bass). A free voice needs room in the
  * shared budget: when the voice to give up is one of this part's, it is restarted
  * in place instead. */
-static voice_t *voice_alloc(track_t *t, uint32_t note)
+static voice_t *voice_alloc_instance(track_t *t, uint32_t note, note_id_t id)
 {
     const engine_t *e = ENGINES[t->engine];
     uint32_t i, np = trk_nvoice(t), best = np, low = np, nfree = 0;
@@ -231,7 +276,7 @@ static voice_t *voice_alloc(track_t *t, uint32_t note)
             return voice_reuse(t, v);
     }
     for (i = 0; i < np; i++) {
-        if (t->v[i].active && t->v[i].note == note)
+        if (!id && !t->v[i].note_id && t->v[i].active && t->v[i].note == note)
             return voice_reuse(t, &t->v[i]);
         nfree += !t->v[i].active;
     }
@@ -281,6 +326,11 @@ static voice_t *voice_alloc(track_t *t, uint32_t note)
     return voice_reuse(t, &t->v[best == np ? 0 : best]);
 }
 
+static voice_t *voice_alloc(track_t *t, uint32_t note)
+{
+    return voice_alloc_instance(t, note, 0);
+}
+
 /* glide: RATE = a fixed speed, TIME = the same time for any interval */
 static void glide_set(track_t *t, voice_t *v, int glide)
 {
@@ -319,6 +369,7 @@ static void voice_start(track_t *t, voice_t *v, uint32_t note, uint32_t vel, int
     int32_t s0 = v->s[0], s1 = v->s[1], s4 = v->s[4], s5 = v->s[5], s6 = v->s[6], s7 = v->s[7];
     uint32_t keep = e->keep;
     voice_was = (uint8_t)(!v->active ? 0u : v->gate ? 2u : 1u);
+    v->note_id = 0; /* any restart invalidates the previous slot association */
     v->note = (uint8_t)note;
     v->vel = (uint8_t)vel;
     v->gate = 1;
@@ -379,6 +430,7 @@ static void mono_play(track_t *t, uint32_t note, uint32_t vel, int retrig, int g
                 v->ph[0] += seed;
             }
         } else {                                            /* legato: new pitch, same envelope */
+            v->note_id = 0;                                 /* conventional legato reassigns the slot */
             v->note = (uint8_t)note;
             voice_scale_pitch(t, v, note);
             v->mvel = t->m_vel;
@@ -467,6 +519,32 @@ static void trk_note_on(track_t *t, uint32_t note, uint32_t vel)
     }
 }
 
+/* Opt-in internal route: no MIDI routing, expression, recording or preset changes.
+ * Caller mints one identity per press and retires it with note_identity_end().
+ * Reject unsupported modes/transitions without queuing a pitch-only note. */
+static int trk_note_on_id(track_t *t, uint32_t note, uint32_t vel, note_id_t id)
+{
+    if (!note_identity_valid(id) || note >= 128u || !vel || vel > 127u ||
+        t->p[P_MUTE] || trk_vmode(t) != V_POLY || t->xf_on ||
+        t->eng_req != t->engine || ENGINES[t->engine]->oneshot) return 0;
+    for (uint32_t i = 0; i < NVOICE; i++)
+        if (t->v[i].note_id == id) return 0;
+    mod_note(t, note, vel);
+    uint32_t any = 0;
+    for (uint32_t i = 0; i < NVOICE; i++) any |= t->v[i].gate;
+    if (!any) {
+        if (!t->p[P_LTRIG]) t->lfo_ph = (uint32_t)t->p[P_LPHASE] << 25;
+        t->lfo_fade = 0;
+    }
+    voice_t *v = voice_alloc_instance(t, note, id);
+    t->nmono = t->mono_note = 0;
+    v->fine = 0;
+    voice_start(t, v, note, vel, t->p[P_GLIDE] != 0);
+    if (!v->active) return 0;
+    v->note_id = id;
+    return 1;
+}
+
 static void trk_note_off(track_t *t, uint32_t note)
 {
     uint32_t i, k = 0, mode = trk_vmode(t);
@@ -494,7 +572,7 @@ static void trk_note_off(track_t *t, uint32_t note)
         }
     }
     for (i = 0; i < NVOICE; i++)                        /* a fallback above already has its new pitch */
-        if (t->v[i].note == note && t->v[i].gate) {
+        if (!t->v[i].note_id && t->v[i].note == note && t->v[i].gate) {
             t->v[i].gate = 0;
             t->v[i].stage = 3;
         }
@@ -504,6 +582,7 @@ static void trk_all_off(track_t *t)
 {
     uint32_t i;
     for (i = 0; i < NVOICE; i++) {
+        t->v[i].note_id = 0;
         t->v[i].gate = 0;
         t->v[i].stage = t->v[i].active ? 3 : 0;
     }
@@ -536,6 +615,7 @@ static void engine_block(track_t *t)
         }
         for (i = 0; i < NVOICE; i++) {                  /* faded to 0: gone */
             voice_t *v = &t->v[i];
+            v->note_id = 0;
             v->active = v->gate = 0;
             v->stage = 0;
             v->env = v->env_out = 0;
