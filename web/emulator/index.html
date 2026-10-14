@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TamaMPE · banco de pruebas FM6</title>
+<style>
+body{font:18px system-ui;background:#151922;color:#eef2f8;max-width:750px;margin:60px auto;padding:24px}button{font:inherit;cursor:pointer;border:0;border-radius:8px;padding:16px;margin:4px}#keys{display:flex;flex-wrap:wrap;margin-top:28px}#keys button{height:140px;width:64px;background:#f4f1e8;touch-action:none}#keys button[aria-pressed=true]{background:#76d6c7}button:disabled{opacity:.4}small{color:#b2bdcf}
+</style>
+<h1>TamaMPE · FM6</h1>
+<p>Motor C original del firmware FM-1 · preset DX7 TINE EP</p>
+<button id="start">Activar audio</button>
+<p id="status" role="status">Audio desactivado.</p>
+<div id="keys" aria-label="Teclado virtual"></div>
+<p><small>Herramienta auxiliar de desarrollo. Mantén pulsada una tecla para tocar.</small></p>
+<script type="module" src="./main.js"></script>
+</html>
