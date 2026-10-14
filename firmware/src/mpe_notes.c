@@ -190,9 +190,11 @@ static void mpe_note(uint32_t ch, uint32_t note, uint32_t vel)
     mpe_owner_t *o = 0;
     for (uint32_t i = 0; i < NOTE_ID_CAP; i++)
         if (!mpe_owner[i].id) { o = &mpe_owner[i]; break; }
-    if (!o) { mpe_clear(1); return; } /* bounded overflow: reset session, drop this note */
+    /* A full bookkeeping table must never interrupt the established session.
+     * Drop only this untracked Note On; its later Note Off is harmless. */
+    if (!o) return;
     note_id_t id = note_identity_new(ch);
-    if (!id) { mpe_clear(1); return; }
+    if (!id) return; /* registry exhaustion follows the same safe drop policy */
     if (!trk_note_on_id(t, note, vel, id)) { note_identity_end(id); return; }
     o->channel = (uint8_t)ch;
     o->note = (uint8_t)note;

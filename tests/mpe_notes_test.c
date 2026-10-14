@@ -169,9 +169,21 @@ int main(void)
     setup();
     for (uint32_t i = 0; i < NOTE_ID_CAP; i++) queued(0x91, 60, 100, 1);
     assert(owners() == NOTE_ID_CAP && identities() == NOTE_ID_CAP);
-    queued(0x91, 60, 100, 1); assert(!owners() && !identities());
+    note_id_t full[NOTE_ID_CAP];
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++) {
+        full[i] = mpe_owner[i].id;
+        assert(full[i] && note_identity_valid(full[i]));
+    }
+    queued(0x91, 60, 100, 1);
+    assert(owners() == NOTE_ID_CAP && identities() == NOTE_ID_CAP);
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++) assert(note_identity_valid(full[i]));
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++) {
+        queued(0x81, 60, 0, 1);
+        assert(owners() == NOTE_ID_CAP - i - 1u);
+    }
+    assert(!identities());
     queued(0x91, 61, 100, 1); assert(owners() == 1); mpe_clear(1);
-    puts("safe transform/recording restrictions and bounded saturation cleanup OK");
+    puts("safe transform/recording restrictions and non-destructive saturation handling OK");
     printf("MPE ownership RAM: %zu + zone %zu bytes; identity registry %zu + counter %zu\n",
            sizeof mpe_owner, sizeof mpe_zone, sizeof note_ids, sizeof note_serial);
     return 0;
