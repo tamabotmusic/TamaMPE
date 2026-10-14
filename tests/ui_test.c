@@ -4499,10 +4499,30 @@ static int test_prophet_pages(void)
     undo_swap();bad+=check("undo after native INIT restores opaque bytes",p5_patch_of(TSEL)->raw[97]==255);
     return bad;
 }
+static int test_mpe_out_menu(void)
+{
+    int bad = 0;
+    ui_power_on();
+    memset(&mpe_out, 0, sizeof mpe_out); mpe_out_forget(); mo_w = mo_r = 0; usb.config = 1;
+    hold(B_HOME); ui.menu_sel = MI_MPE_OUT;
+    bad += check("MPE OUT is OFF when the temporary UI state starts", !mpe_out_ui_members() && !mpe_out_ui_pending());
+    turn(EN_K1, 1);
+    bad += check("MPE OUT menu selects one lower-zone member without persisting a setting", mpe_out_ui_members() == 1u && mpe_out_ui_pending());
+    press(B_OCTUP);
+    bad += check("MPE OUT menu OCT+ advances the requested member count", mpe_out_ui_members() == 2u && mpe_out_ui_pending());
+    for (uint32_t i = 2; i < 15u; i++) turn(EN_K1, 1);
+    turn(EN_K1, 1);
+    bad += check("MPE OUT menu reaches and clamps the 15-member lower zone", mpe_out_ui_members() == 15u);
+    for (uint32_t i = 0; i < 15u; i++) turn(EN_K1, -1);
+    bad += check("MPE OUT menu returns to OFF without touching persistent settings", !mpe_out_ui_members());
+    mpe_out_configure(0);                            /* leave later conventional UI cases unchanged */
+    return bad;
+}
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     int bad = test_prophet_pages();
+    bad += test_mpe_out_menu();
     bad += test_large_face();
     bad += test_home_notes();
     bad += test_stage();

@@ -464,3 +464,9 @@ static inline void reset_intended(void)         /* a reset on purpose (UBOOT, an
 
 /* GLO solo belongs to the mixer, independently of quick-layer effects. */
 static volatile uint8_t track_solo;
+
+/* USB MPE OUT is deliberately a live, non-persistent setting.  The UI only
+ * publishes a one-byte request; seq.c consumes it at an audio block boundary. */
+void mpe_out_request(uint32_t members);
+uint32_t mpe_out_ui_members(void);
+int mpe_out_ui_pending(void);

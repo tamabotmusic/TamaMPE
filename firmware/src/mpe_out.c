@@ -9,7 +9,9 @@ typedef struct {
 static mpe_out_owner_t mpe_out_owner[MPE_OUT_MAX];
 static struct {
     uint16_t serial;
-    uint8_t members, setup, resync;
+    /* All fields below cross the UI/main loop and the audio ISR. They are
+     * byte-sized on AC79, so each published state transition is atomic. */
+    volatile uint8_t request, members, setup, resync, retire, retire_members;
 } mpe_out;
 
 static uint32_t mpe_out_packet(uint32_t cin, uint32_t status, uint32_t d1, uint32_t d2)
@@ -20,20 +22,48 @@ static mpe_out_owner_t *mpe_out_find(uint16_t id)
     return 0;
 }
 static void mpe_out_forget(void) { memset(mpe_out_owner, 0, sizeof mpe_out_owner); }
+static void mpe_out_drop_keys(void) { memset(kb_mpe_out, 0, sizeof kb_mpe_out); }
 static void mpe_out_configure(uint32_t members)
 {
     if (members > MPE_OUT_MAX) return;
     mpe_out_forget();
-    memset(kb_mpe_out, 0, sizeof kb_mpe_out);
+    mpe_out_drop_keys();
     mpe_out.members = (uint8_t)members;                 /* zero is the default: conventional MIDI OUT */
+    mpe_out.request = (uint8_t)members;
     mpe_out.setup = 0;
-    mpe_out.resync = 0;
+    mpe_out.resync = mpe_out.retire = mpe_out.retire_members = 0;
 }
 static int mpe_out_enabled(void) { return mpe_out.members != 0; }
+/* While a reconfiguration is queued, suppress all new external notes.  The
+ * local FM6 path remains independent and continues to sound normally. */
+static int mpe_out_routing(void) { return mpe_out.members || mpe_out.request || mpe_out.retire; }
+void mpe_out_request(uint32_t members)
+{
+    if (members <= MPE_OUT_MAX) {
+        mpe_out.request = (uint8_t)members;
+        RING_PUBLISH();
+    }
+}
+uint32_t mpe_out_ui_members(void) { return mpe_out.request; }
+int mpe_out_ui_pending(void)
+{
+    return mpe_out.request != mpe_out.members || mpe_out.retire || mpe_out.resync ||
+           (mpe_out.request && mpe_out.setup < 3u + 4u * mpe_out.members);
+}
+static void mpe_out_retire(uint32_t old)
+{
+    mpe_out_forget();
+    mpe_out_drop_keys();
+    mpe_out.resync = 0;
+    mpe_out.setup = 0;
+    mpe_out.retire_members = (uint8_t)old;
+    mpe_out.retire = old ? 1u : 0u;
+    if (!old) mpe_out.members = mpe_out.request;
+}
 static void mpe_out_usb_reset(void)
 {
     mpe_out_forget();
-    memset(kb_mpe_out, 0, sizeof kb_mpe_out);
+    mpe_out_drop_keys();
     if (mpe_out.members) { mpe_out.setup = 0; mpe_out.resync = 1; }
 }
 static int mpe_out_send(uint32_t status, uint32_t d1, uint32_t d2)
@@ -42,7 +72,27 @@ static int mpe_out_send(uint32_t status, uint32_t d1, uint32_t d2)
  * 15-member zone from monopolising the USB packet queue. */
 static void mpe_out_service(void)
 {
-    if (!mpe_out.members || !usb.config) return;
+    if (mpe_out.request != mpe_out.members && !mpe_out.retire)
+        mpe_out_retire(mpe_out.members);
+    if (!usb.config) return;
+    if (mpe_out.retire) {
+        uint32_t p = mpe_out.retire++ - 1u, what;
+        if (p <= mpe_out.retire_members) {             /* master and every old member: no stuck remote note */
+            if (!mpe_out_send(0xb0u | p, 120, 0)) { mpe_out.retire--; return; }
+            return;
+        }
+        p -= mpe_out.retire_members + 1u;
+        if (p < 3u) {                                  /* master RPN 6 = zero: leave the old lower zone */
+            what = p == 0u ? 101u << 8 : p == 1u ? 100u << 8 | 6u : 6u << 8;
+            if (!mpe_out_send(0xb0u, what >> 8, what & 127u)) { mpe_out.retire--; return; }
+            return;
+        }
+        mpe_out.retire = 0;
+        mpe_out.members = mpe_out.request;             /* a later knob turn is handled by another safe transition */
+        mpe_out.setup = mpe_out.resync = 0;
+        return;
+    }
+    if (!mpe_out.members) return;
     if (mpe_out.resync) {
         uint32_t ch = mpe_out.resync - 1u;
         if (!mpe_out_send(0xb0u | ch, 120, 0)) return;  /* all sound off is safe after a lost packet */
@@ -71,7 +121,7 @@ static void mpe_out_service(void)
 static int mpe_out_ready(void) { return mpe_out_enabled() && !mpe_out.resync && mpe_out.setup >= 3u + 4u * mpe_out.members; }
 static uint16_t mpe_out_note_on(uint32_t key, uint32_t tone, uint32_t note, uint32_t velocity)
 {
-    if (!mpe_out_ready()) return 0;
+    if (mpe_out.request != mpe_out.members || !mpe_out_ready()) return 0;
     mpe_out_owner_t *o = 0;
     for (uint32_t i = 0; i < mpe_out.members; i++) if (!mpe_out_owner[i].id) { o = &mpe_out_owner[i]; break; }
     if (!o || !mpe_out_send(0x90u | (uint32_t)(o - mpe_out_owner + 1u), note, velocity)) return 0;
@@ -106,5 +156,5 @@ static void mpe_out_timbre(uint16_t id, uint32_t value)
 static void mpe_out_panic(void)
 {
     if (!mpe_out_enabled()) return;
-    mpe_out_forget(); mpe_out.resync = 1;
+    mpe_out_forget(); mpe_out_drop_keys(); mpe_out.resync = 1;
 }

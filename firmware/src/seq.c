@@ -672,11 +672,11 @@ static void key_on(uint32_t k, track_t *t)
     for (i = 0; i < n; i++) {
         uint32_t x = kb_chord[k][i];
         if (midi_local_held(t, x)) {
-            if (mpe_out_enabled()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
+            if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
             continue;
         }
         input_on(t, x, 100);
-        if (mpe_out_enabled()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
+        if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
         else midi_out_event(0x09u | (0x90u | mc) << 8 | x << 16 | 100u << 24);
     }
     kb_chn[k] = (uint8_t)n;
@@ -690,12 +690,12 @@ static void key_off(uint32_t k, track_t *t)
     kb_chn[k] = 0;
     for (i = 0; i < n; i++) {
         uint32_t x = kb_chord[k][i];
-        if (mpe_out_enabled()) mpe_out_note_off(kb_mpe_out[k][i]);
+        if (mpe_out_routing()) mpe_out_note_off(kb_mpe_out[k][i]);
         kb_mpe_out[k][i] = 0;
         if (midi_local_held(t, x))
             continue;
         input_off(t, x);
-        if (!mpe_out_enabled()) midi_out_event(0x08u | (0x80u | mc) << 8 | x << 16);
+        if (!mpe_out_routing()) midi_out_event(0x08u | (0x80u | mc) << 8 | x << 16);
     }
 }
 

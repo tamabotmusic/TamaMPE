@@ -12,6 +12,14 @@ static void reset_out(uint32_t members)
     assert(mpe_out_ready());
 }
 static uint32_t status(uint32_t n) { return (midi_out_q[n % MQ] >> 8) & 255u; }
+static uint32_t data1(uint32_t n) { return (midi_out_q[n % MQ] >> 16) & 127u; }
+static uint32_t data2(uint32_t n) { return (midi_out_q[n % MQ] >> 24) & 127u; }
+static void drain_transition(void)
+{
+    uint32_t guard = 256;
+    while (mpe_out_ui_pending() && guard--) { mpe_out_service(); mo_r = mo_w; }
+    assert(!mpe_out_ui_pending());
+}
 int main(void)
 {
     host_tracks_init(); memset(&mpe_out, 0, sizeof mpe_out); mpe_out_forget(); mo_w = mo_r = 0; usb.config = 1;
@@ -58,5 +66,26 @@ int main(void)
     mpe_out_configure(0); mo_w = mo_r = 0; assert(!mpe_out_enabled());
     midi_out_event(mpe_out_packet(9, 0x90, 60, 100)); assert(mo_w == 1u && status(0) == 0x90u);
     puts("MPE OUT: disabled mode leaves conventional MIDI OUT unchanged OK");
+
+    reset_out(3); mo_r = mo_w;
+    uint16_t held = mpe_out_note_on(0, 0, 60, 100); assert(held);
+    mo_r = mo_w; uint32_t base = mo_r; mpe_out_request(0);
+    assert(mpe_out_ui_pending() && !mpe_out_note_on(1, 0, 61, 100));
+    /* One master + three member All Sound Off messages, then master RPN 6 = 0. */
+    for (uint32_t i = 0; i < 8u; i++) { mpe_out_service(); mo_r = mo_w; }
+    assert(!mpe_out_ui_pending() && !mpe_out_enabled() && !mpe_out_find(held));
+    assert(status(base) == 0xb0u && data1(base) == 120u && status(base + 3u) == 0xb3u && data1(base + 4u) == 101u && data1(base + 5u) == 100u && data2(base + 5u) == 6u && data1(base + 6u) == 6u && !data2(base + 6u));
+    puts("MPE OUT: disabling a live zone sends All Sound Off and RPN 6 = 0 before conventional output OK");
+
+    reset_out(15); mo_r = mo_w; mpe_out_request(1);
+    /* A full USB queue pauses the transition; no owner or configuration is lost. */
+    mo_w = mo_r + MQ; mpe_out_service(); assert(mpe_out_ui_pending() && mpe_out.retire == 1u);
+    mo_r = mo_w; drain_transition(); assert(mpe_out_ready() && mpe_out.members == 1u);
+    puts("MPE OUT: member changes survive a full queue and reconfigure only after safely retiring the old zone OK");
+
+    reset_out(2); mo_r = mo_w; usb.config = 0; mpe_out_request(1); mpe_out_service();
+    assert(mpe_out_ui_pending() && !mpe_out_note_on(0, 0, 60, 100));
+    usb.config = 1; drain_transition(); assert(mpe_out_ready() && mpe_out.members == 1u);
+    puts("MPE OUT: disconnect pauses a requested change and reconnect completes it without interleaved notes OK");
     return 0;
 }

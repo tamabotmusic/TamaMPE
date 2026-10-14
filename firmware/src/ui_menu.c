@@ -12,13 +12,13 @@ enum { MI_COLOR, MI_HOLD, MI_LIGHTS,
 #if MELODEE_USB_AUDIO
        MI_USB, MI_USB_INPUT,
 #endif
-       MI_CLICK, MI_CLICK_LEVEL, MI_COUNTIN, MI_PREVIEW, MI_ADD, MI_AUTOSAVE, MI_ACCEL, MI_SCREEN, MI_PANEL, MI_ABOUT, MI_DESIGNER, MI_BACK,
+       MI_MPE_OUT, MI_CLICK, MI_CLICK_LEVEL, MI_COUNTIN, MI_PREVIEW, MI_ADD, MI_AUTOSAVE, MI_ACCEL, MI_SCREEN, MI_PANEL, MI_ABOUT, MI_DESIGNER, MI_BACK,
        MI_COUNT };
 static const char *const MI_NAME[MI_COUNT] = {"COLOR", "HOLD", "LIGHTS",
 #if MELODEE_USB_AUDIO
                                               "USB AUDIO", "USB INPUT",
 #endif
-                                              "AUDIO CLICK", "CLICK LEVEL", "COUNT-IN", "NOTE PREVIEW", "CHORD ENTRY",
+                                              "MPE OUT", "AUDIO CLICK", "CLICK LEVEL", "COUNT-IN", "NOTE PREVIEW", "CHORD ENTRY",
                                               "AUTOSAVE", "KNOB ACCEL", "SCREEN OFF", "CALIBRATION", "ABOUT", "SOUND DESIGNER", "BACK"};
 #if MELODEE_USB_AUDIO
 /* USB AUDIO's four settings, as ua_off_want (UA_OFF_OUT | UA_OFF_IN) */
@@ -223,6 +223,7 @@ static void draw_menu(void)
 {
     uint32_t i, pass, sig = ui.menu * 7u + ui.menu_sel * 131u + settings.palette * 1009u + settings.lowcut * 7919u +
                             settings_hold * 3511u + settings_lights * 6151u + settings_autosave * 15485863u +
+                            mpe_out_ui_members() * 7283u + (uint32_t)mpe_out_ui_pending() * 1217u +
 #if MELODEE_USB_AUDIO
                             ua_off_want * 92821u + ua_tracks_want * 324161u +
 #endif
@@ -277,6 +278,15 @@ static void draw_menu(void)
             if (i == MI_AUTOSAVE) value = settings_autosave ? "ON" : "OFF";
             if (i == MI_SCREEN) value = (const char *const[]){"NEVER", "5 MIN", "15 MIN", "30 MIN", "60 MIN"}[scr_get()];
             if (i == MI_LIGHTS) value = LIGHTS_NAME[settings_lights % LIGHTS_N];
+            if (i == MI_MPE_OUT) {
+                uint32_t m = mpe_out_ui_members();
+                if (!m) value = "OFF";
+                else { str_cpy(b, "15 CH", sizeof b); b[0] = (char)('0' + m / 10u); b[1] = (char)('0' + m % 10u); value = b + (m < 10u); }
+                if (mpe_out_ui_pending()) {
+                    if (!m) value = "OFF SENDING";
+                    else { str_cpy(b, "15 SENDING", sizeof b); b[0] = (char)('0' + m / 10u); b[1] = (char)('0' + m % 10u); value = b + (m < 10u); }
+                }
+            }
 #if MELODEE_USB_AUDIO
             if (i == MI_USB_INPUT) value = ua_tracks_want ? "4 TRACKS" : "STEREO";
             if (i == MI_USB) value = (const char *const[]){"In + Out", "In", "Out", "Off"}[ua_off_want & 3u];
@@ -367,6 +377,12 @@ static void menu_input(uint32_t oct)                  /* oct: ui_input.c oct_tap
         ok = 0;
     }
 #endif
+    if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_MPE_OUT) {
+        uint32_t v = mpe_out_ui_members();
+        v = s > 0 ? (v < 15u ? v + 1u : v) : s < 0 ? (v ? v - 1u : 0u) : (v + 1u) % 16u;
+        mpe_out_request(v);
+        ui.force = 1; ok = 0;
+    }
     if ((s != 0 || ok) && ui.menu == 1 && ui.menu_sel == MI_LIGHTS) {
         /* KNOB 1 steps OFF .. FULL, OCT+ steps and wraps (saved when the menu closes) */
         uint32_t v = settings_lights % LIGHTS_N;
