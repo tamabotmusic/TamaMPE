@@ -105,5 +105,25 @@ int main(void)
     mod_begin(&trk[0]); smart_begin(&trk[0]); smart_end(&trk[0]); mod_end(&trk[0]);
     assert(!smart_macro[0][0].value && !smart_macro[0][0].target);
     puts("block smoothing, matrix coexistence and restoration OK");
+
+    reset_fm6();
+    int16_t base_ml = trk[0].p[P_E2], base_pan = trk[0].p[P_PAN];
+    smart_macro_route_config(&trk[0], 0, 0, SMART_DST_FM6_MLVL, 40, -10, 10, SMART_CURVE_LINEAR);
+    smart_macro_route_config(&trk[0], 0, 1, SMART_DST_FM6_MLVL, 30, -8, 8, SMART_CURVE_SMOOTH);
+    smart_macro_route_config(&trk[0], 1, 0, SMART_DST_FM6_MLVL, -20, -64, 63, SMART_CURVE_EXP);
+    smart_macro_route_config(&trk[0], 1, 1, SMART_DST_PAN, 30, -6, 6, SMART_CURVE_EXP);
+    smart_macro_value(&trk[0], 0, 127); smart_macro_value(&trk[0], 1, 127);
+    mod_begin(&trk[0]); smart_begin(&trk[0]);
+    assert(trk[0].p[P_E2] <= base_ml + 18 && trk[0].p[P_E2] >= base_ml - 64);
+    assert(trk[0].p[P_PAN] > base_pan && trk[0].p[P_PAN] <= base_pan + 6);
+    smart_end(&trk[0]); mod_end(&trk[0]);
+    assert(trk[0].p[P_E2] == base_ml && trk[0].p[P_PAN] == base_pan);
+    smart_macro_value(&trk[0], 0, 0); smart_macro_value(&trk[0], 1, 0);
+    for (uint32_t i = 0; i < 64; i++) {
+        int32_t one[CTL]; mod_begin(&trk[0]); smart_begin(&trk[0]);
+        track_render(&trk[0], one, CTL); smart_end(&trk[0]); mod_end(&trk[0]);
+    }
+    assert(trk[0].p[P_E2] == base_ml && trk[0].p[P_PAN] == base_pan);
+    puts("two routes per macro, shared destinations, limits, curves and exact zero OK");
     return 0;
 }

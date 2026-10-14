@@ -214,7 +214,10 @@ static void mix_part(track_t *t,uint32_t n)
             }
         }
     }
+    int smart_pan = smart_pan_touched();
     smart_end(t);
+    if (smart_pan)
+        mix_cache[(uint32_t)(t-trk)].valid = 0;
     if(mod.on)mod_end(t);
     if(extra){void (*volatile run)(uint32_t)=mix_extra_sends;run(n);}
 }
