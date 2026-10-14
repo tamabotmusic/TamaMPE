@@ -998,10 +998,6 @@ static void confirm_text(char *a, char *b)
         str_cpy(a, "REPLACE OLD TEMPLATE?", 24);
         str_cpy(b, "Old settings/template replaced", 32);
         break;
-    case CF_RESTART:                                 /* the menu closed with another clock */
-        str_cpy(a, "RESTART NOW?", 24);
-        str_cpy(b, "Unsaved song changes are lost", 32);
-        break;
     default:
         str_cpy(a, "CLEAR T1 SEQUENCE?", 24);     /* the header (T1..T4) is hidden */
         a[7] = (char)('1' + k % NTRK);

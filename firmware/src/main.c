@@ -83,61 +83,12 @@ static void timer5_start(void)                 /* OSC /4 = 6 MHz, PRD 600 -> 10 
     fm1_timer5_start(isr_timer5, 4);   /* above ALNK0 (3): the scan nests into the render (see fm1_timer5_irq) */
 }
 
-int fm1_clock_undo;                            /* unfamiliar boot clock or settled rollback from the OVERCLOCK retune */
-
-/* OVERCLOCK (overclock.c): the saved mode's clock, before CPU1, the audio ISR and the LCD (it reads the new LSB at
- * fm1_lcd_baud). The supply rails are never touched. A session above 320 MHz that ended without an intended reset (a crash, the watchdog, a switch
- * that never returned: oc_guard.live) comes back at 320, saved by oc_poll. The switch runs from .ram_text (the
- * system clock wobbles while the PLL restarts), through its function pointer; a failed rollback stays in SRAM on
- * RC16M for watchdog recovery and never returns here with an unverified PLL. */
-static void oc_boot(void)
+/* The voices CPU1 + CPU0 carry at the clock running: the SPL's 360 MHz, or a 320 that a soft reset kept from a
+ * previous firmware session until power-off. TamaMPE never writes the PLL. */
+static void clock_boot(void)
 {
-    static const uint16_t mult[OC_N] = { FCLK_MULT_320, FCLK_MULT_360 };
-    uint32_t mode, m;
-    if (oc_guard.magic != OC_GUARD_MAGIC) {
-        oc_guard.magic = OC_GUARD_MAGIC;
-        oc_guard.live = 0;
-    }
-    mode = oc_boot_choose(oc_guard.live != 0);
-    oc_guard.live = mode != OC_OFF;             /* before anything that can fail at the new clock */
-    fm1_clock_undo = fm1_clock_set(mult[mode]) != 0;
-    m = fm1_clock_mult();
-    vbudget_cpu1 = VBUDGET * (m ? fm1_clock_mhz_of(m) : 360u) / 360u;   /* the voices CPU1 + CPU0 carry there */
-}
-
-/* main loop: a CPU1 retired above 320 MHz sets 320 for the next start; a reverted mode is saved and said; the
- * restart question answered Yes stops the transport, saves the settings and restarts */
-static void oc_poll(void)
-{
-#if MELODEE_DUAL_CORE
-    static int8_t had_core1 = -1;
-    if (had_core1 < 0)
-        had_core1 = (int8_t)audio_worker_online;
-    if (had_core1 && !audio_worker_online) {
-        had_core1 = 0;
-        oc_core1_lost();
-    }
-#endif
-    if (oc_reverted == 1) {
-        oc_reverted = 2;
-        settings_save();                        /* (the settings poll retries until it is written) */
-        ui_message("CPU FAULT: 320 MHZ");
-    }
-    if (oc_restart) {
-        if (transport_busy()) {
-            transport_req = 2;
-            return;
-        }
-        settings_save();
-#if MELODEE_FLASH
-        if (persist_pending)
-            return;
-#endif
-        oc_restart = 0;
-        fm1_audio_stop();
-        reset_intended();
-        fm1_reboot();
-    }
+    uint32_t m = fm1_clock_mult();
+    vbudget_cpu1 = VBUDGET * (m ? fm1_clock_mhz_of(m) : 360u) / 360u;
 }
 
 static void hexs(char *b, uint32_t v)
@@ -207,7 +158,7 @@ static void melodee_init(void)
 static void fm1_main(void)
 {
     int32_t knob = 512 * 16;
-    fm1__pc_out(6,0);                         /* codec held quiet before flash, PLL and splash */
+    fm1__pc_out(6,0);                         /* codec held quiet before flash and splash */
     dsp_tables_init();                        /* the RAM lookup tables (FM6), before anything renders */
     persist_boot();
 #if MELODEE_OTA
@@ -215,8 +166,7 @@ static void fm1_main(void)
         ota_boot_cleanup();                             /* staging area left by an update */
 #endif
     settings_init();
-    oc_boot();                                /* the OVERCLOCK clock: an unfamiliar boot clock or a settled rollback
-                                               * raises the undo flag in editor command 79 */
+    clock_boot();                             /* the voice budget at the clock found (never changed) */
     lcd_init();
     lcd_fill(0, 0, 240, 240, T_BG);
     draw_text_box(0, 94, 240, &AF_L, "MELODEE", T_THEME, 1);
@@ -361,7 +311,6 @@ static void fm1_main(void)
 #if MELODEE_DUAL_CORE
         fm1_core1_poll();                             /* a retired CPU1 sits out until power-off */
 #endif
-        oc_poll();                                    /* OVERCLOCK: back to 320 MHz after a fault, the restart */
         melodee_dbg.stage = 2;
         ui_leds();
         ui_draw();

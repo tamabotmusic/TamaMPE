@@ -456,14 +456,9 @@ static volatile uint32_t fm1_ms;  /* milliseconds since boot (TIMER4-based, TIME
 /* boot-loop guard (main.c): two boots in a row that die in the first 30 s -> UBOOT */
 #define BOOTGUARD_MAGIC 0x42475244u
 struct { uint32_t magic, failed, pending; } bootguard __attribute__((section(".noinit")));
-/* OVERCLOCK (main.c oc_boot): live, a session above OFF that has not ended in an intended reset (a crash, the
- * watchdog or a failed clock switch leave it set: the next boot goes back to OFF). Gone at power-off. */
-#define OC_GUARD_MAGIC 0x4F43474Bu
-struct { uint32_t magic, live; } oc_guard __attribute__((section(".noinit")));
 static inline void reset_intended(void)         /* a reset on purpose (UBOOT, an update): not a failed boot */
 {
     bootguard.pending = 0;
-    oc_guard.live = 0;
 }
 
 /* GLO solo belongs to the mixer, independently of quick-layer effects. */

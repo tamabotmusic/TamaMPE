@@ -1557,8 +1557,7 @@ static void ui_confirm_accept(void)
     uint32_t kind = ui.confirm;
     ui.confirm = 0;
     ui.force = 1;
-    if(kind==CF_RESTART){oc_restart=1;ui_message("RESTARTING");
-    } else if(kind==CF_OLD_SETTINGS){settings_old_accept();settings_save();
+    if(kind==CF_OLD_SETTINGS){settings_old_accept();settings_save();
     } else if(kind==CF_OLD_TEMPLATE){settings_old_accept();template_save();
     } else if(kind==CF_IMPORT){preset_old_allow(1);sysex_commit();preset_old_allow(0);
     } else if(kind==CF_BULK_ERASE){bulk_erase();

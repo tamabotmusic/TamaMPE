@@ -1320,55 +1320,6 @@ static int test_display_preferences(void)
     return bad;
 }
 
-/* MENU > OVERCLOCK (overclock.c): 320 MHz by default, KNOB 1 to 360 and back; closing with another clock asks to
- * restart; kept in favorites.factory[15][30] bits 2..3 beside KNOB ACCEL (an unreleased 396 reads as 320); a failed
- * session or a lost CPU1 above 320 sets 320 again */
-static int test_overclock(void)
-{
-    int bad = 0;
-    ui_power_on();
-    PREF_BITS = PREF_ACCEL_OFF;                         /* (KNOB ACCEL OFF: the neighbour bits stay) */
-    oc_boot_mode = OC_OFF; oc_restart = oc_reverted = 0;
-    bad += check("OVERCLOCK defaults to 320 MHz", oc_get() == OC_OFF && !strcmp(OC_NAME[oc_get()], "320 MHz"));
-    hold(B_HOME); ui.menu_sel = MI_CLOCK; turn(EN_K1, 1);
-    bad += check("OVERCLOCK: KNOB 1 to 360 MHz at once, the menu open, KNOB ACCEL untouched",
-                 oc_get() == OC_MEDIUM && !ui.confirm && ui.menu == 1 && (PREF_BITS & PREF_ACCEL_OFF) &&
-                 !strcmp(OC_NAME[oc_get()], "360 MHz"));
-    turn(EN_K1, 1);
-    bad += check("OVERCLOCK: 360 MHz is the top", oc_get() == OC_MEDIUM && !ui.confirm);
-    {
-        persist_t p = {0};
-        p.magic = PERSIST_MAGIC; p.panel = panel;
-        settings_export(&p); PREF_BITS = 0;
-        bad += check("OVERCLOCK is saved with the settings (bits 2..3 of the KNOB ACCEL byte)",
-                     settings_import(&p, sizeof p) && oc_get() == OC_MEDIUM && (PREF_BITS & PREF_ACCEL_OFF));
-    }
-    press(B_OCTDN);
-    bad += check("OVERCLOCK: closing the menu with a new clock asks to restart", !ui.menu && ui.confirm == CF_RESTART);
-    press(B_OCTDN);
-    bad += check("OVERCLOCK: No keeps 360 for the next start and does not restart", !ui.confirm && !oc_restart &&
-                 oc_get() == OC_MEDIUM);
-    hold(B_HOME); press(B_OCTDN); press(B_OCTUP);
-    bad += check("OVERCLOCK: Yes asks main.c to restart", !ui.confirm && oc_restart == 1);
-    oc_restart = 0;
-    oc_boot_mode = OC_MEDIUM; hold(B_HOME); press(B_OCTDN);
-    bad += check("OVERCLOCK: closing at the clock it booted with asks nothing", !ui.confirm);
-    PREF_BITS = (uint8_t)(2u << PREF_OC_SHIFT);
-    bad += check("OVERCLOCK: a stored 396 MHz (unreleased) reads as 320", oc_get() == OC_OFF);
-    oc_put(OC_MEDIUM);
-    bad += check("OVERCLOCK: a session above 320 that failed boots at 320, to be saved",
-                 oc_boot_choose(1) == OC_OFF && oc_get() == OC_OFF && oc_boot_mode == OC_OFF && oc_reverted == 1);
-    oc_reverted = 0; oc_put(OC_MEDIUM);
-    bad += check("OVERCLOCK: a session that ended on purpose keeps its clock",
-                 oc_boot_choose(0) == OC_MEDIUM && oc_get() == OC_MEDIUM && !oc_reverted);
-    oc_core1_lost();
-    bad += check("OVERCLOCK: CPU1 retired above 320 sets 320 for the next start", oc_get() == OC_OFF && oc_reverted == 1);
-    oc_reverted = 0; oc_boot_mode = OC_OFF; oc_put(OC_OFF); oc_core1_lost();
-    bad += check("OVERCLOCK: at 320 a lost CPU1 changes nothing", oc_get() == OC_OFF && !oc_reverted);
-    PREF_BITS = 0; ui.confirm = 0;
-    return bad;
-}
-
 static int test_information(void)
 {
     uint16_t header[240 * H_HEAD], battery[240 * H_HEAD];
@@ -4570,7 +4521,6 @@ int main(void)
     bad += test_favorites();
     bad += test_browser();
     bad += test_display_preferences();
-    bad += test_overclock();
     bad += test_information();
     bad += test_chain();
     bad += test_product_ux();
