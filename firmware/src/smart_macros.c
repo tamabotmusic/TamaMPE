@@ -18,6 +18,9 @@
 #define SMART_CURVE_LINEAR 0u
 #define SMART_CURVE_SMOOTH 1u
 #define SMART_CURVE_EXP 2u
+#define SMART_SMR1_SIZE 140u
+#define SMART_SMR1_DATA 128u
+#define SMART_SMR1_MAGIC 0x31524D53u /* "SMR1", little-endian */
 /* AC79 internal SRAM is coherent between CPU0 and CPU1, but publishing a
  * sequence still needs the processor fence used by the audio-worker mailbox.
  * Host tests retain a compiler-only barrier. */
@@ -54,6 +57,22 @@ static struct {
     int16_t saved[2];
     uint8_t mask;
 } smart_part;
+
+static uint32_t smart_crc32(const uint8_t *b, uint32_t n)
+{
+    uint32_t c = 0xFFFFFFFFu;
+    while (n--) {
+        c ^= *b++;
+        for (uint32_t k = 0; k < 8u; k++)
+            c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+    }
+    return ~c;
+}
+
+static void smart_u32_put(uint8_t *b, uint32_t v)
+{ b[0]=(uint8_t)v; b[1]=(uint8_t)(v>>8); b[2]=(uint8_t)(v>>16); b[3]=(uint8_t)(v>>24); }
+static uint32_t smart_u32_get(const uint8_t *b)
+{ return (uint32_t)b[0]|(uint32_t)b[1]<<8|(uint32_t)b[2]<<16|(uint32_t)b[3]<<24; }
 
 static int16_t smart_q15(int32_t value)
 {
@@ -124,12 +143,112 @@ static void smart_macro_route(track_t *t, uint32_t slot, uint32_t destination, i
     smart_macro_route_config(t, slot, 1, SMART_DST_OFF, 0, -64, 63, SMART_CURVE_LINEAR);
 }
 
-static void smart_macro_reset(track_t *t)
+/* Values are performance state, never part of SMR1. */
+static void smart_macro_reset_values(track_t *t)
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    if (tr < NTRK) {
+        smart_edit_begin(tr);
+        for (uint32_t k = 0; k < SMART_MACRO_N; k++)
+            smart_shadow[tr][k].target = 0;
+        smart_edit_publish(tr);
+        SMART_BARRIER();
+        smart_reset_req[tr]++;
+    }
+}
+
+static void smart_macro_clear_routes(track_t *t)
 {
     uint32_t tr = (uint32_t)(t - trk);
     if (tr < NTRK) {
         smart_edit_begin(tr);
         memset(smart_shadow[tr], 0, sizeof smart_shadow[tr]);
+        smart_edit_publish(tr);
+        SMART_BARRIER();
+        smart_reset_req[tr]++;
+    }
+}
+
+/* Kept for the existing runtime tests and callers that explicitly want both. */
+static void smart_macro_reset(track_t *t) { smart_macro_clear_routes(t); }
+
+static void smart_smr1_off(uint8_t out[SMART_SMR1_SIZE])
+{
+    memset(out, 0, SMART_SMR1_SIZE);
+    smart_u32_put(out, SMART_SMR1_MAGIC);
+    out[4] = 1u; out[5] = (1u << NTRK) - 1u;
+    out[6] = SMART_SMR1_DATA; out[7] = 0u;
+    smart_u32_put(out + 136u, smart_crc32(out, 136u));
+}
+
+static int smart_snapshot_track(uint32_t tr, smart_config_t out[SMART_MACRO_N])
+{
+    for (uint32_t tries = 0; tries < 8u; tries++) {
+        uint32_t seq = smart_publish_seq[tr];
+        if (seq & 1u) continue;
+        SMART_BARRIER();
+        memcpy(out, smart_shadow[tr], sizeof smart_shadow[tr]);
+        SMART_BARRIER();
+        if (smart_publish_seq[tr] == seq && !(seq & 1u)) return 1;
+    }
+    return 0;
+}
+
+/* A compact, explicit wire format: route order is track, macro, A/B.
+ * Byte 0: destination bits 0..1, curve bits 2..3 (bits 4..7 are zero).
+ * Byte 1: depth + 63 (0..126); byte 2: lo + 64; byte 3: hi + 64.
+ * This never depends on C structure padding or signed representation. */
+static int smart_macro_snapshot_routes(uint8_t out[SMART_SMR1_SIZE])
+{
+    smart_smr1_off(out);
+    for (uint32_t tr = 0; tr < NTRK; tr++) {
+        smart_config_t c[SMART_MACRO_N];
+        if (!smart_snapshot_track(tr, c)) return 0;
+        for (uint32_t m = 0; m < SMART_MACRO_N; m++) for (uint32_t r = 0; r < SMART_ROUTE_N; r++) {
+            const smart_route_t *q = &c[m].route[r];
+            uint32_t at = 8u + ((tr * SMART_MACRO_N + m) * SMART_ROUTE_N + r) * 4u;
+            uint32_t destination = q->destination <= SMART_DST_PAN ? q->destination : SMART_DST_OFF;
+            uint32_t curve = q->curve <= SMART_CURVE_EXP ? q->curve : SMART_CURVE_LINEAR;
+            int32_t lo = q->lo, hi = q->hi;
+            if (lo > hi) { int32_t x=lo;lo=hi;hi=x; }
+            if (lo > 0) lo = 0;
+            if (hi < 0) hi = 0;
+            out[at] = (uint8_t)(destination | curve << 2);
+            out[at + 1u] = (uint8_t)(clamp(q->depth, -63, 63) + 63);
+            out[at + 2u] = (uint8_t)(clamp(lo, -64, 63) + 64);
+            out[at + 3u] = (uint8_t)(clamp(hi, -64, 63) + 64);
+        }
+    }
+    smart_u32_put(out + 136u, smart_crc32(out, 136u));
+    return 1;
+}
+
+/* Invalid headers leave every route off.  A valid block can still contain a
+ * malformed route; that route alone is disabled.  Restoring publishes a full
+ * configuration with zero targets, then asks the ISR to discard old slew. */
+static void smart_macro_restore_routes(const uint8_t in[SMART_SMR1_SIZE])
+{
+    int valid = smart_u32_get(in) == SMART_SMR1_MAGIC && in[4] == 1u && in[5] == (1u << NTRK) - 1u &&
+                in[6] == SMART_SMR1_DATA && !in[7] && smart_u32_get(in + 136u) == smart_crc32(in, 136u);
+    for (uint32_t tr = 0; tr < NTRK; tr++) {
+        smart_config_t c[SMART_MACRO_N];
+        memset(c, 0, sizeof c);
+        if (valid) for (uint32_t m = 0; m < SMART_MACRO_N; m++) for (uint32_t r = 0; r < SMART_ROUTE_N; r++) {
+            uint32_t at = 8u + ((tr * SMART_MACRO_N + m) * SMART_ROUTE_N + r) * 4u;
+            uint8_t meta=in[at], depth=in[at+1u], lo=in[at+2u], hi=in[at+3u];
+            uint32_t destination=meta&3u, curve=(meta>>2)&3u;
+            if ((meta & 0xF0u) || destination > SMART_DST_PAN || curve > SMART_CURVE_EXP || depth > 126u || lo > 127u || hi > 127u)
+                continue;
+            c[m].route[r].destination = (uint8_t)destination;
+            c[m].route[r].curve = (uint8_t)curve;
+            c[m].route[r].depth = (int8_t)((int32_t)depth - 63);
+            c[m].route[r].lo = (int8_t)((int32_t)lo - 64);
+            c[m].route[r].hi = (int8_t)((int32_t)hi - 64);
+            if (c[m].route[r].lo > c[m].route[r].hi || c[m].route[r].lo > 0 || c[m].route[r].hi < 0)
+                memset(&c[m].route[r], 0, sizeof c[m].route[r]);
+        }
+        smart_edit_begin(tr);
+        memcpy(smart_shadow[tr], c, sizeof c);
         smart_edit_publish(tr);
         SMART_BARRIER();
         smart_reset_req[tr]++;

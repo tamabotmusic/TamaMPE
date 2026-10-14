@@ -433,7 +433,7 @@ static int cz_native_protocol(void)
     memset(cz_patch,0,sizeof cz_patch); memset(&tmpl,0,sizeof tmpl);
     int restored=tmpl_take((const uint8_t *)&saved,sizeof saved);template_load();
     bad+=check("native tone bytes and mode survive a saved template",restored && trk[1].p[P_E7]==CZ_NATIVE && !memcmp(cz_patch[1].raw,raw,CZ_BYTES));
-    const uint32_t sizes[]={sizeof(tmpl_fx_legacy_t),sizeof(tmpl_fx_single_t),sizeof(tmpl_t)-40u,sizeof(tmpl_t)-16u,sizeof(tmpl_t)};
+    const uint32_t sizes[]={sizeof(tmpl_fx_legacy_t),sizeof(tmpl_fx_single_t),sizeof(tmplj_t)-40u,sizeof(tmplj_t)-16u,sizeof(tmplj_t),sizeof(tmpl_t)};
     for(uint32_t k=0;k<NELEM(sizes);k++){
         uint8_t begin[12]={0,1},abort[2]={3,1};uint32_t len=sizeof(persist_t)+sizes[k];
         for(uint32_t j=0;j<5;j++)begin[2+j]=(uint8_t)((len>>(7*j))&127u);

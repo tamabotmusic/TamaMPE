@@ -898,7 +898,7 @@ static void apply_preset_to(track_t *t, uint32_t pi)
     const engine_t *e = ENGINES[t->eng_req % NENGINES];
     uint32_t i;
     load_begin(t, UNDO_SOUND);
-    smart_macro_reset(t);                              /* runtime only: a loaded sound starts neutral */
+    smart_macro_reset_values(t);                       /* routes belong to the project, not the sound */
     panic_req |= (uint8_t)(1u << trk_index(t));       /* MONO/POLY may change: release what sounds */
     t->user = 0; t->user_native=0;
     if (t == TSEL)
