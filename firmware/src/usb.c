@@ -123,14 +123,20 @@ static int midi_enqueue(uint32_t pkt, uint32_t source)
     return 1;
 }
 
-static void midi_out_event(uint32_t pkt)            /* from the audio ISR */
+static int midi_out_event(uint32_t pkt)             /* from the audio ISR */
 {
     if (usb.config && mo_w - mo_r < MQ) {
         midi_out_q[mo_w % MQ] = pkt;
         RING_PUBLISH();
         mo_w++;
+        return 1;
     }
+    return 0;
 }
+
+#ifndef MELODEE_LOADER
+static void mpe_out_usb_reset(void);
+#endif
 
 /* ------------------------------------------------------- descriptors --- */
 /* interfaces: 0 audio control, 1 MIDI streaming, then CDC's two, or the USB audio functions' four (usb_audio_desc.h).
@@ -868,6 +874,9 @@ static void usb_poll(void)                              /* TIMER5 ISR, 2 kHz */
         usb.config = 0;
         usb.suspended = 0;
         mo_r = mo_w;                                    /* nothing stale for the next host */
+#ifndef MELODEE_LOADER
+        mpe_out_usb_reset();                            /* physical notes cannot survive a USB reset remotely */
+#endif
         usb.sx_on = 0;
 #ifdef FM6_RX
         fm6_rx_on = 0;

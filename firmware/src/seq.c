@@ -660,6 +660,9 @@ static void input_off(track_t *t, uint32_t note)
     if (!recording_owns(t, note)) trk_note_off(t, note); /* other mode (ARP switched while held) */
 }
 
+static uint16_t kb_mpe_out[27][CHORD_MAX];
+#include "mpe_out.c"
+
 /* key k plays kb_note[k] on track t: its chord (chord.c; the note alone with CHRD OFF). A note another key
  * holds already sounds: it is not started again (nor sent to MIDI OUT); the key keeps its notes */
 static void key_on(uint32_t k, track_t *t)
@@ -668,10 +671,13 @@ static void key_on(uint32_t k, track_t *t)
     kb_chn[k] = 0;
     for (i = 0; i < n; i++) {
         uint32_t x = kb_chord[k][i];
-        if (midi_local_held(t, x))
+        if (midi_local_held(t, x)) {
+            if (mpe_out_enabled()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
             continue;
+        }
         input_on(t, x, 100);
-        midi_out_event(0x09u | (0x90u | mc) << 8 | x << 16 | 100u << 24);
+        if (mpe_out_enabled()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
+        else midi_out_event(0x09u | (0x90u | mc) << 8 | x << 16 | 100u << 24);
     }
     kb_chn[k] = (uint8_t)n;
     last_note = kb_note[k];                         /* (step entry, the SAMPLE zone: the key's note) */
@@ -684,10 +690,12 @@ static void key_off(uint32_t k, track_t *t)
     kb_chn[k] = 0;
     for (i = 0; i < n; i++) {
         uint32_t x = kb_chord[k][i];
+        if (mpe_out_enabled()) mpe_out_note_off(kb_mpe_out[k][i]);
+        kb_mpe_out[k][i] = 0;
         if (midi_local_held(t, x))
             continue;
         input_off(t, x);
-        midi_out_event(0x08u | (0x80u | mc) << 8 | x << 16);
+        if (!mpe_out_enabled()) midi_out_event(0x08u | (0x80u | mc) << 8 | x << 16);
     }
 }
 
@@ -1164,8 +1172,10 @@ static void events_block(uint32_t n)
         transport_req = 0;
     }
     mpe_maintenance();
+    mpe_out_service();
     pr = panic_req;
     panic_req = 0;
+    if (pr) mpe_out_panic();
     if (midi_in_overflow) {                            /* a lost note-off must never leave a held note */
         mi_r = mi_w;
         mpe_clear(1);
