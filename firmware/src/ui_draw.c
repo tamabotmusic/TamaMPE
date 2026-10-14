@@ -735,6 +735,31 @@ static void draw_columns(void)
         return;
     }
 #endif
+    if (cur_page()->graph == GR_SMART) {                 /* runtime-only per-track Smart Macro page */
+        const smart_route_t *r = smart_macro_route_get(TSEL, ui.smart_slot, ui.smart_route);
+        if (!ui.smart_mode) {
+            for (c = 0; c < 4u; c++) {
+                int32_t v = smart_macro_target(TSEL, c);
+                char label[8];
+                label[0] = 'M'; label[1] = (char)('1' + c); label[2] = 0;
+                fmt_int(val, v);
+                draw_column(c, label, val, "", v ? VAL(c) : T_DIM, (v + 127) * 1000 / 254, ICON_AUTO);
+            }
+        } else if (ui.smart_mode == 1u) {
+            const char *dst = !r || r->destination == SMART_DST_OFF ? "OFF" :
+                              r->destination == SMART_DST_FM6_MLVL ? "MLVL" : "PAN";
+            fmt_int(val, (int32_t)ui.smart_slot + 1); draw_column(0, "MACRO", val, "/4", VAL(0u), ui.smart_slot * 1000 / 3, ICON_AUTO);
+            draw_column(1, "ROUTE", ui.smart_route ? "B" : "A", "/2", VAL(1u), ui.smart_route ? 1000 : 0, ICON_AUTO);
+            draw_column(2, "DEST", dst, "", r && r->destination ? VAL(2u) : T_DIM, -1, ICON_AUTO);
+            fmt_int(val, r ? r->depth : 0); draw_column(3, "DEPTH", val, "", r && r->depth ? VAL(3u) : T_DIM, -1, ICON_AUTO);
+        } else {
+            fmt_int(val, r ? r->lo : 0); draw_column(0, "MIN", val, "", VAL(0u), r ? (r->lo + 64) * 1000 / 127 : 0, ICON_AUTO);
+            fmt_int(val, r ? r->hi : 0); draw_column(1, "MAX", val, "", VAL(1u), r ? (r->hi + 64) * 1000 / 127 : 0, ICON_AUTO);
+            draw_column(2, "CURVE", !r || r->curve == SMART_CURVE_LINEAR ? "LINEAR" : r->curve == SMART_CURVE_SMOOTH ? "SMOOTH" : "EXP", "", VAL(2u), -1, ICON_AUTO);
+            draw_column(3, "EDIT", "LIMITS", "", T_THEME, -1, ICON_AUTO);
+        }
+        return;
+    }
     if (cur_page()->graph == GR_MOD) {                   /* the route's SRC, the route, its DST AMT */
         const track_t *t = TSEL;
         uint32_t id = P_M1SRC + 3u * mod_ui_slot;

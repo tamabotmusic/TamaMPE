@@ -122,6 +122,7 @@ static struct {
     uint16_t step_mods, step_used; /* STEP's ENV/SCL buttons awaiting release, and the gestures consumed */
     uint8_t lane;                /* SEQ > STEP on a DRUM track (the grid): the lane the keys and KNOB 3 / 4 edit */
     uint8_t hot_col, hot_t;      /* column whose knob was just turned (drawn white) */
+    uint8_t smart_mode, smart_slot, smart_route; /* SMART MACROS: play, route or limits; runtime only */
     uint8_t import_refresh, new_active;
     uint8_t name_active;
     uint8_t bulk_hold;
@@ -240,6 +241,8 @@ static int page_visible(uint32_t i)
     if (PAGES[i].graph == GR_MOTION)                   /* MOTION: once there is motion (Kerem: an empty page; the one
                                                          * shown stays until it is left) */
         return motion_has_lanes(TSEL) || (!ui.home && ui.page == i);
+    if (PAGES[i].graph == GR_SMART)
+        return TSEL->eng_req == ENGI_FM6;
     if (PAGES[i].fam == FAM_ENV && native_titles(FAM_ENV))   /* (the track's ADSR, ENV DEST: nothing there) */
         return 0;
     if(PAGES[i].scope==SC_DRUM || PAGES[i].scope==SC_DRUMHIT)return drum_track(TSEL);

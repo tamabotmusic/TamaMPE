@@ -11,6 +11,10 @@ static void reset_fm6(void)
 {
     memset(trk, 0, sizeof trk);
     memset(smart_macro, 0, sizeof smart_macro);
+    memset(smart_shadow, 0, sizeof smart_shadow);
+    memset((void *)smart_publish_seq, 0, sizeof smart_publish_seq);
+    memset((void *)smart_applied_seq, 0, sizeof smart_applied_seq);
+    memset((void *)smart_reset_req, 0, sizeof smart_reset_req);
     eng_state_reset();
     memset(fm6_eff, 0, sizeof fm6_eff);
     fm6_fn_reset();
@@ -125,5 +129,32 @@ int main(void)
     }
     assert(trk[0].p[P_E2] == base_ml && trk[0].p[P_PAN] == base_pan);
     puts("two routes per macro, shared destinations, limits, curves and exact zero OK");
+
+    reset_fm6();
+    smart_macro_route_config(&trk[0], 0, 0, SMART_DST_FM6_MLVL, 40, 10, 30, SMART_CURVE_LINEAR);
+    const smart_route_t *positive = smart_macro_route_get(&trk[0], 0, 0);
+    assert(positive && positive->lo == 0 && positive->hi == 30);
+    smart_macro_route_config(&trk[0], 0, 1, SMART_DST_PAN, 40, -30, -10, SMART_CURVE_LINEAR);
+    const smart_route_t *negative = smart_macro_route_get(&trk[0], 0, 1);
+    assert(negative && negative->lo == -30 && negative->hi == 0);
+    assert(!smart_route_value(&smart_macro[0][0], positive));
+    assert(!smart_route_value(&smart_macro[0][0], negative));
+    assert(smart_macro[0][0].route[0].destination == SMART_DST_OFF); /* not live before a block */
+    smart_begin(&trk[0]); smart_end(&trk[0]);
+    assert(smart_macro[0][0].route[0].lo == 0 && smart_macro[0][0].route[1].hi == 0);
+    smart_edit_begin(0);                              /* emulate UI writing while CPU1 reaches a block */
+    smart_shadow[0][0].route[0].destination = SMART_DST_PAN;
+    smart_begin(&trk[0]); smart_end(&trk[0]);
+    assert(smart_macro[0][0].route[0].destination == SMART_DST_FM6_MLVL);
+    smart_edit_publish(0);
+    smart_begin(&trk[0]); smart_end(&trk[0]);
+    assert(smart_macro[0][0].route[0].destination == SMART_DST_PAN);
+    reset_fm6();
+    smart_publish_seq[0] = smart_applied_seq[0] = 0xfffffffeu;
+    smart_macro_value(&trk[0], 0, 31);                 /* even sequence wraps without losing publication */
+    assert(smart_publish_seq[0] == 0u);
+    smart_begin(&trk[0]); smart_end(&trk[0]);
+    assert(smart_applied_seq[0] == 0u && smart_macro[0][0].target == smart_q15(31));
+    puts("route ranges include exact neutral zero and publish only complete block-boundary state");
     return 0;
 }

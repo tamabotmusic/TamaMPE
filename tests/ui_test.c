@@ -4518,11 +4518,52 @@ static int test_mpe_out_menu(void)
     mpe_out_configure(0);                            /* leave later conventional UI cases unchanged */
     return bad;
 }
+static int test_smart_macro_ui(void)
+{
+    int bad = 0;
+    ui_power_on();
+    set_engine_of(TSEL, ENGI_FM6); TSEL->engine = TSEL->eng_req;
+    memset(smart_macro, 0, sizeof smart_macro);
+    memset(smart_shadow, 0, sizeof smart_shadow);
+    memset((void *)smart_publish_seq, 0, sizeof smart_publish_seq);
+    memset((void *)smart_applied_seq, 0, sizeof smart_applied_seq);
+    memset((void *)smart_reset_req, 0, sizeof smart_reset_req);
+    go_title("SMART MACROS");
+    turn(EN_K1, 17); turn(EN_K4, -9);
+    bad += check("SMART MACROS assigns all four knobs only on its performance page",
+                 smart_macro_target(TSEL, 0) == 17 && smart_macro_target(TSEL, 3) == -9 && !ui.smart_mode);
+    press(B_OCTUP);
+    turn(EN_K1, 1); turn(EN_K2, 1); turn(EN_K3, 1); turn(EN_K4, 24);
+    const smart_route_t *r = smart_macro_route_get(TSEL, 1, 1);
+    bad += check("SMART MACROS route editor selects macro, A/B, destination and signed depth",
+                 ui.smart_mode == 1u && r && r->destination == SMART_DST_FM6_MLVL && r->depth == 24);
+    press(B_OCTUP);
+    turn(EN_K1, 74);
+    r = smart_macro_route_get(TSEL, 1, 1);
+    bad += check("SMART MACROS normalizes a positive-only minimum to neutral zero", r && r->lo == 0);
+    turn(EN_K2, -100); turn(EN_K3, 1);
+    r = smart_macro_route_get(TSEL, 1, 1);
+    bad += check("SMART MACROS limits and curve publish a complete normalized route",
+                 ui.smart_mode == 2u && r && r->lo == -37 && r->hi == 0 && r->curve == SMART_CURVE_SMOOTH);
+    press(B_OCTDN);
+    bad += check("SMART MACROS OCT- returns through the route editor without leaving the page", ui.smart_mode == 1u && smart_page());
+    int32_t target = smart_macro_target(&trk[0], 0);
+    track_select(1); set_engine_of(TSEL, 3); TSEL->engine = TSEL->eng_req;
+    edit_param(0, 19);
+    bad += check("SMART MACROS cannot edit another track after it stops being an FM6 page",
+                 !smart_page() && smart_macro_target(&trk[0], 0) == target);
+    track_select(0); go_title("LFO");
+    int16_t rate = TSEL->p[P_LRATE]; turn(EN_K1, 1);
+    bad += check("outside SMART MACROS the physical knob returns to its normal LFO control",
+                 TSEL->p[P_LRATE] != rate && smart_macro_target(TSEL, 0) == target);
+    return bad;
+}
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     int bad = test_prophet_pages();
     bad += test_mpe_out_menu();
+    bad += test_smart_macro_ui();
     bad += test_large_face();
     bad += test_home_notes();
     bad += test_stage();

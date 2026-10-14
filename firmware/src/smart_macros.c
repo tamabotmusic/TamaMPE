@@ -18,6 +18,14 @@
 #define SMART_CURVE_LINEAR 0u
 #define SMART_CURVE_SMOOTH 1u
 #define SMART_CURVE_EXP 2u
+/* AC79 internal SRAM is coherent between CPU0 and CPU1, but publishing a
+ * sequence still needs the processor fence used by the audio-worker mailbox.
+ * Host tests retain a compiler-only barrier. */
+#ifdef FM1_IRQ_TARGET
+#define SMART_BARRIER() fm1_sram_sync()
+#else
+#define SMART_BARRIER() __asm__ volatile("" ::: "memory")
+#endif
 
 typedef struct {
     int8_t depth, lo, hi;        /* signed output steps */
@@ -29,7 +37,18 @@ typedef struct {
     smart_route_t route[SMART_ROUTE_N];
 } smart_macro_t;
 
+typedef struct {
+    int16_t target;
+    smart_route_t route[SMART_ROUTE_N];
+} smart_config_t;
+
+/* The ISR owns smart_macro (including the slew state).  UI/main marks the
+ * shadow sequence odd while it edits and even when complete.  The ISR first
+ * snapshots it locally, then accepts the copy only if the sequence did not
+ * change.  This is safe whether render runs on CPU0 or CPU1. */
 static smart_macro_t smart_macro[NTRK][SMART_MACRO_N];
+static smart_config_t smart_shadow[NTRK][SMART_MACRO_N];
+static volatile uint32_t smart_publish_seq[NTRK], smart_applied_seq[NTRK];
 static volatile uint8_t smart_reset_req[NTRK];
 static struct {
     int16_t saved[2];
@@ -41,12 +60,33 @@ static int16_t smart_q15(int32_t value)
     return (int16_t)clamp(value, -127, 127) * 258; /* 127 maps to 32766; zero stays exact */
 }
 
+static int32_t smart_value127(int16_t value)
+{
+    return clamp(((int32_t)value + (value < 0 ? -129 : 129)) / 258, -127, 127);
+}
+
+static void smart_edit_begin(uint32_t tr)
+{
+    smart_publish_seq[tr]++;
+    SMART_BARRIER();
+}
+
+static void smart_edit_publish(uint32_t tr)
+{
+    SMART_BARRIER();
+    smart_publish_seq[tr]++;
+    SMART_BARRIER();
+}
+
 /* Main-loop API.  Values are the compact -127..127 controller domain. */
 static void smart_macro_value(track_t *t, uint32_t slot, int32_t value)
 {
     uint32_t tr = (uint32_t)(t - trk);
-    if (tr < NTRK && slot < SMART_MACRO_N)
-        smart_macro[tr][slot].target = smart_q15(value);
+    if (tr >= NTRK || slot >= SMART_MACRO_N)
+        return;
+    smart_edit_begin(tr);
+    smart_shadow[tr][slot].target = smart_q15(value);
+    smart_edit_publish(tr);
 }
 
 /* Configure one of the two routes. Unsupported destinations/curves are off. */
@@ -58,17 +98,23 @@ static void smart_macro_route_config(track_t *t, uint32_t slot, uint32_t route,
     smart_route_t *r;
     if (tr >= NTRK || slot >= SMART_MACRO_N || route >= SMART_ROUTE_N)
         return;
-    r = &smart_macro[tr][slot].route[route];
     if (destination != SMART_DST_FM6_MLVL && destination != SMART_DST_PAN)
         destination = SMART_DST_OFF;
     if (curve > SMART_CURVE_EXP)
         curve = SMART_CURVE_LINEAR;
     if (lo > hi) { int32_t x = lo; lo = hi; hi = x; }
+    /* A runtime macro's neutral point is always zero.  A user range that
+     * excludes it is widened, never shifted, so zero cannot cause a jump. */
+    if (lo > 0) lo = 0;
+    if (hi < 0) hi = 0;
+    smart_edit_begin(tr);
+    r = &smart_shadow[tr][slot].route[route];
     r->destination = (uint8_t)destination;
     r->depth = (int8_t)clamp(depth, -63, 63);
     r->lo = (int8_t)clamp(lo, -64, 63);
     r->hi = (int8_t)clamp(hi, -64, 63);
     r->curve = (uint8_t)curve;
+    smart_edit_publish(tr);
 }
 
 /* Compatibility helper from phase 1: route zero, full parameter range. */
@@ -81,8 +127,13 @@ static void smart_macro_route(track_t *t, uint32_t slot, uint32_t destination, i
 static void smart_macro_reset(track_t *t)
 {
     uint32_t tr = (uint32_t)(t - trk);
-    if (tr < NTRK)
+    if (tr < NTRK) {
+        smart_edit_begin(tr);
+        memset(smart_shadow[tr], 0, sizeof smart_shadow[tr]);
+        smart_edit_publish(tr);
+        SMART_BARRIER();
         smart_reset_req[tr]++;
+    }
 }
 
 /* Four blocks gives a short, deterministic control-rate slew without DSP work per sample. */
@@ -118,9 +169,25 @@ static int32_t smart_curve(int32_t x, uint32_t curve)
 
 static int32_t smart_route_value(const smart_macro_t *m, const smart_route_t *r)
 {
+    if (!m->value || !r->depth)
+        return 0;
     int32_t x = smart_curve(m->value, r->curve);
     int32_t out = (x * r->depth) / 32767;
     return clamp(out, r->lo, r->hi);
+}
+
+/* UI reads its own shadow rather than ISR state, so its cards immediately
+ * reflect an edit even before the next audio control block consumes it. */
+static int32_t smart_macro_target(const track_t *t, uint32_t slot)
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    return tr < NTRK && slot < SMART_MACRO_N ? smart_value127(smart_shadow[tr][slot].target) : 0;
+}
+
+static const smart_route_t *smart_macro_route_get(const track_t *t, uint32_t slot, uint32_t route)
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    return tr < NTRK && slot < SMART_MACRO_N && route < SMART_ROUTE_N ? &smart_shadow[tr][slot].route[route] : 0;
 }
 
 static int smart_destination(uint32_t destination, uint32_t *index, int32_t *lo, int32_t *hi)
@@ -143,6 +210,22 @@ static __attribute__((noinline)) void smart_begin(track_t *t)
         memset(smart_macro[tr], 0, sizeof smart_macro[tr]);
         smart_reset_req[tr] = 0;
         return;
+    }
+    if (smart_publish_seq[tr] != smart_applied_seq[tr] && !(smart_publish_seq[tr] & 1u)) {
+        /* Copy only a stable shadow; slew values remain ISR-owned and
+         * therefore continuous.  A concurrent edit simply leaves the last
+         * complete configuration active for this block. */
+        smart_config_t config[SMART_MACRO_N];
+        uint32_t seq = smart_publish_seq[tr];
+        memcpy(config, smart_shadow[tr], sizeof config);
+        SMART_BARRIER();
+        if (smart_publish_seq[tr] == seq) {
+            for (k = 0; k < SMART_MACRO_N; k++) {
+                smart_macro[tr][k].target = config[k].target;
+                memcpy(smart_macro[tr][k].route, config[k].route, sizeof smart_macro[tr][k].route);
+            }
+            smart_applied_seq[tr] = seq;
+        }
     }
     for (k = 0; k < SMART_MACRO_N; k++) {
         smart_macro_t *m = &smart_macro[tr][k];

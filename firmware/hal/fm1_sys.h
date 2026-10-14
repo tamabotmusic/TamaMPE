@@ -18,6 +18,10 @@
  */
 #pragma once
 #include <stdint.h>
+
+/* Publish ordinary internal-SRAM state between CPU0 and CPU1.  Internal SRAM
+ * is coherent; csync supplies the required processor and compiler ordering. */
+static inline void fm1_sram_sync(void) { __asm__ volatile("csync" ::: "memory"); }
 #include "fm1_cc.h"
 
 #define FM1_P33_CON (*(volatile uint32_t *)0x13E08u)

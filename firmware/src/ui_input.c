@@ -735,12 +735,53 @@ static void native_motion(const uint8_t *old)
     if (!designer_on() && !momentary.active && motion_native_edited(TSEL, old))
         motion_unplayed();
 }
+
+/* SMART MACROS is deliberately a runtime page: the play page assigns the
+ * four physical knobs directly, while OCT+ / OCT- cycle through the two
+ * compact route-editor cards.  No layer chord is consumed. */
+static int smart_page(void) { return !ui.home && cur_page()->graph == GR_SMART && TSEL->eng_req == ENGI_FM6; }
+
+static void smart_ui_route_put(uint32_t destination, int32_t depth, int32_t lo, int32_t hi, uint32_t curve)
+{
+    smart_macro_route_config(TSEL, ui.smart_slot, ui.smart_route, destination, depth, lo, hi, curve);
+}
+
+static void smart_ui_knob(uint32_t slot, int32_t steps)
+{
+    const smart_route_t *r = smart_macro_route_get(TSEL, ui.smart_slot, ui.smart_route);
+    uint32_t destination = r ? r->destination : SMART_DST_OFF, curve = r ? r->curve : SMART_CURVE_LINEAR;
+    int32_t depth = r ? r->depth : 0, lo = r ? r->lo : -64, hi = r ? r->hi : 63;
+    if (!steps) return;
+    if (!ui.smart_mode) {                              /* interpretation: all four knobs are macros */
+        smart_macro_value(TSEL, slot, smart_macro_target(TSEL, slot) + steps);
+        return;
+    }
+    if (ui.smart_mode == 1u) {                         /* route: macro, A/B, destination, depth */
+        if (slot == 0u) ui.smart_slot = (uint8_t)clamp((int32_t)ui.smart_slot + steps, 0, 3);
+        else if (slot == 1u) ui.smart_route = (uint8_t)clamp((int32_t)ui.smart_route + steps, 0, 1);
+        else if (slot == 2u) smart_ui_route_put((uint32_t)clamp((int32_t)destination + steps, 0, 2), depth, lo, hi, curve);
+        else smart_ui_route_put(destination, depth + steps, lo, hi, curve);
+    } else {                                          /* limits: min, max and curve for the selected route */
+        if (slot == 0u) smart_ui_route_put(destination, depth, lo + steps, hi, curve);
+        else if (slot == 1u) smart_ui_route_put(destination, depth, lo, hi + steps, curve);
+        else if (slot == 2u) smart_ui_route_put(destination, depth, lo, hi, (uint32_t)clamp((int32_t)curve + steps, 0, 2));
+    }
+}
+
+static void smart_ui_oct(uint32_t oct)
+{
+    if (oct & 2u) ui.smart_mode = (uint8_t)((ui.smart_mode + 1u) % 3u);
+    else if (oct & 1u) ui.smart_mode = (uint8_t)((ui.smart_mode + 2u) % 3u);
+    ui.force = 1;
+}
+
 static void edit_param(uint32_t slot, int32_t steps)
 {
     int16_t *vp;
     const page_t *pg = cur_page();
     const param_desc_t *d;
     int32_t v;
+    if (pg->graph == GR_SMART) { if (smart_page()) smart_ui_knob(slot, steps); return; }
     if (pg->graph == GR_SLOTS && slot == 0u && (ui.proj_new || (steps > 0 && song.g[G_SLOT] == PROJ_TMPL))) {
         ui.proj_new = steps > 0;                        /* past TMPL: NEW (SLOT itself stays) */
         if (!ui.proj_new && ui.act == 4u) ui.act = 0;
@@ -1500,7 +1541,7 @@ static void page_knob(uint32_t k, int32_t s)
     const page_t *pg = cur_page();
     int16_t *hv;
     if (ui.home || pg->scope == SC_STEP || pg->scope == SC_TRK || ((pg->scope==SC_DRUM || pg->scope==SC_DRUMHIT) && pg->id[k]!=255) || page_desc(pg, k, &hv) ||
-        (pg->graph == GR_USER && k == 0u) || (pg->graph == GR_MOD && k == 1u)
+        (pg->graph == GR_USER && k == 0u) || (pg->graph == GR_MOD && k == 1u) || pg->graph == GR_SMART
         || pg->graph == GR_SONG || pg->graph == GR_PATGRID || pg->graph == GR_SCALE_PICKER || (scale_settings_page(pg) && k == 1u)
         || (pg->graph == GR_SLICES && k < 2u)) {       /* (not an empty column) */
         ui.hot_col = (uint8_t)k;
@@ -1921,6 +1962,10 @@ static void ui_input(void)
     for (id = 0; b; id++, b >>= 1)
         if (b & 1u)
             page_tap(panel_btn_of(id));
+    if (smart_page() && oct) {                         /* OCT± stays inside the runtime editor */
+        smart_ui_oct(oct);
+        oct = 0;
+    }
     if(bulk.on && !slot_kind() && !ui.home && cur_page()->graph==GR_ROLL && (oct&2u)){
         notes_bulk_sheet_open();oct=0;
     } else if((bulk.on||ui.note_move||ui.note_copy)&&(oct&1u)){bulk_clear();oct=0;}
