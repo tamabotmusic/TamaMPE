@@ -1,8 +1,8 @@
 # TamaMPE: first MPE note input
 
-This implements note ownership, independent FM6 pitch bend and local Channel
-Pressure timbre. CC74 and other unsupported messages on reserved zone
-channels are consumed without changing track controls or DX7 programs.
+This implements note ownership plus independent FM6 pitch bend, Channel
+Pressure and CC74 timbre. Other unsupported messages on reserved zone channels
+are consumed without changing track controls or DX7 programs.
 
 ## Activation
 
@@ -40,7 +40,8 @@ releases the applicable keys and respects sustain. CC120 silences and discards
 the applicable owners regardless of sustain. CC121 releases deferred notes by
 resetting applicable pedals; on the master it resets all zone pedals. It also
 centres the applicable bend while preserving sensitivity and restores a
-still-keyed member note to zero pressure. Master pressure remains ignored. Master Note On/Off messages are consumed.
+still-keyed member note to zero pressure and CC74. Master pressure and CC74
+remain ignored. Master Note On/Off messages are consumed.
 
 Track panic, engine/mode changes, FM6 preset reload or native transpose change,
 MPE reconfiguration/disable, and MIDI queue overflow retire affected identities.
@@ -67,7 +68,7 @@ and pitch. It can release a new matching note. There is no channel quarantine.
   track tuning still apply. Physical keyboard and nonreserved MIDI channels
   continue through the original paths.
 - An identity is not a voice index, preserving room for future engines and Layer.
-  Prophet, Layer, Smart Macros and timbre expression are not implemented here.
+  Prophet, Layer and Smart Macros are not implemented here.
 
 ## Independent FM6 pitch bend
 
@@ -104,8 +105,8 @@ add oversampling or change the DX7 engine's frequency law. USB/TRS remain shared
 Member Channel Pressure (0xD0) updates only the latest still-keyed instance for
 that channel. Zero and absence of messages are neutral: no output gain or patch
 changes. Raw pressure is stored separately from its smoothed source value for
-future programmable destinations. CC74 remains reserved and unimplemented.
-Master pressure is ignored; conventional channel aftertouch is unchanged.
+future programmable destinations. Master pressure is ignored; conventional
+channel aftertouch is unchanged.
 
 The default assignment raises only enabled, nonzero-level, active modulators,
 after AMS. It leaves carriers and shared pmod/amod/emod/AMS caches untouched.
@@ -140,3 +141,28 @@ The existing engine/mixer limits still apply; there is no universal loudness or
 anti-aliasing guarantee. Device listening/timing and voice-steal transitions still
 need hardware validation. The standard build is validated, not every optional
 resident/overclock profile.
+
+## Independent FM6 CC74 / Slide (provisional timbre destination)
+
+Member CC74 stores a separate per-channel source. It initializes the next note
+when sent before Note On and updates only the newest still-keyed identity on its
+member channel. Zero and no CC74 message are neutral. Sustain/release tails
+keep their resolved value, so a reused channel cannot retimbre an older note.
+Note Off and CC120/123 leave the member's current source cached for its next
+Note On, matching the existing bend/pressure policy. CC121 resets the applicable
+current member source; session cleanup and voice reuse reset all cached state.
+The master channel consumes CC74 without changing shared controls or member voices.
+
+FM6 applies CC74 after AMS only to active, nonzero-level modulators. At full
+scale it adds 0.25 Q24 log2 amplitude (2^0.25, about +1.5 dB at the modulator),
+while Channel Pressure retains its existing 0.5 Q24 maximum. Their combined
+increment is capped at the existing pressure maximum (0.5 Q24), so both at
+full scale do not exceed its established headroom. It changes harmonic content,
+not pitch or patch bytes; carriers, disabled operators and completed envelopes
+remain unchanged. This is a provisional fixed destination intended to become a
+programmable Smart Macro destination later.
+
+CC74 uses the same monotonic ~5 ms control-rate smoothing and FM6 gain ramps as
+pressure. It adds no per-sample work and has no output-gain compensation. As
+with pressure, audible response depends on an algorithm having active
+modulators; all-carrier patches can remain unchanged.

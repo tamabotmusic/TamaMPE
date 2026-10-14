@@ -190,6 +190,7 @@ typedef struct {
     int32_t s[8];                /* engine state (filters, envs) */
     uint32_t age;
     uint16_t mpe_pressure_level, mpe_pressure_target; /* Q15 source, 0..32768; modulator offset */
+    uint16_t mpe_timbre_level, mpe_timbre_target;     /* Q15 CC74 source, 0..32768; modulator offset */
     uint8_t mvel;                /* mod.c: the note-on velocity (before UNISON scaling) and RAND of the note */
     int16_t mrnd;
 } voice_t;

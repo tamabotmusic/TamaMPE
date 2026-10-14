@@ -373,6 +373,7 @@ static void voice_start(track_t *t, voice_t *v, uint32_t note, uint32_t vel, int
     v->mpe_bend_q24 = v->mpe_bend_target = 0;
     v->mpe_pressure = 0;
     v->mpe_pressure_level = v->mpe_pressure_target = 0;
+    v->mpe_timbre_level = v->mpe_timbre_target = 0;
     v->note = (uint8_t)note;
     v->vel = (uint8_t)vel;
     v->gate = 1;

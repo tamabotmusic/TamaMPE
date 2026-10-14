@@ -16,6 +16,7 @@ typedef struct {
 } mpe_bend_channel_t;
 static mpe_bend_channel_t mpe_bend_ch[16];
 static uint8_t mpe_pressure_ch[16]; /* initialized to neutral at session start */
+static uint8_t mpe_timbre_ch[16];   /* CC74, neutral at session start */
 static int32_t mpe_master_bend;  /* resolved master contribution to this session */
 static struct {
     uint16_t pedals;             /* member pedal bits; master pedal is separate */
@@ -42,6 +43,26 @@ static void mpe_pressure_update(uint32_t ch, uint32_t value)
                 v->mpe_pressure = (uint8_t)value;
                 v->mpe_pressure_target = mpe_pressure_level(value);
             }
+        }
+        break;
+    }
+}
+/* CC74 follows the pressure ownership rule: it applies to this channel's
+ * newest still-keyed identity only. A sustained/released tail keeps its
+ * resolved value, so reusing a member channel cannot retimbre it. */
+static void mpe_timbre_update(uint32_t ch, uint32_t value)
+{
+    if (!ch) return; /* master CC74 has no global policy */
+    mpe_timbre_ch[ch] = (uint8_t)value;
+    note_id_t id = mpe_bend_ch[ch].latest;
+    for (uint32_t i = 0; i < NOTE_ID_CAP; i++) {
+        mpe_owner_t *o = &mpe_owner[i];
+        if (!id || o->id != id || o->released) continue;
+        track_t *t = &trk[o->track];
+        for (uint32_t k = 0; k < NVOICE; k++) {
+            voice_t *v = &t->v[k];
+            if (v->note_id == id && v->active && v->gate)
+                v->mpe_timbre_target = mpe_pressure_level(value);
         }
         break;
     }
@@ -117,6 +138,7 @@ static void mpe_clear(int silence)
     for (uint32_t ch = 0; ch < 16u; ch++) {
         mpe_bend_ch[ch].latest = mpe_bend_ch[ch].raw = 0;
         mpe_pressure_ch[ch] = 0;
+        mpe_timbre_ch[ch] = 0;
     }
 }
 static void mpe_forget_track(uint32_t track)
@@ -209,6 +231,7 @@ static void mpe_note(uint32_t ch, uint32_t note, uint32_t vel)
             t->v[i].mpe_bend_q24 = t->v[i].mpe_bend_target = bend;
             t->v[i].mpe_pressure = mpe_pressure_ch[ch];
             t->v[i].mpe_pressure_level = t->v[i].mpe_pressure_target = mpe_pressure_level(mpe_pressure_ch[ch]);
+            t->v[i].mpe_timbre_level = t->v[i].mpe_timbre_target = mpe_pressure_level(mpe_timbre_ch[ch]);
         }
 }
 static void mpe_pedal_up(uint32_t ch)
@@ -249,6 +272,9 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
             else if (!ch) mpe_zone.master_pedal = 1;
             else mpe_zone.pedals |= (uint16_t)(1u << ch);
             break;
+        case 74:
+            mpe_timbre_update(ch, d2);
+            break;
         case 120: case 123:
             for (uint32_t i = 0; i < NOTE_ID_CAP; i++) {
                 mpe_owner_t *o = &mpe_owner[i];
@@ -266,6 +292,7 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
             break;
         case 121:
             mpe_pressure_update(ch, 0); /* member neutral; released snapshots remain frozen */
+            mpe_timbre_update(ch, 0);
             mpe_bend_ch[ch].raw = 0;
             mpe_bend_update(ch); /* centre applicable bend, retain sensitivity */
             c->rpn_msb = c->rpn_lsb = 127;
@@ -275,7 +302,7 @@ static int mpe_event(uint32_t st, uint32_t ch, uint32_t d1, uint32_t d2)
         default: break;
         }
     }
-    /* Reserved zone channels cannot edit shared patches/controllers. CC74 and
-     * all other unsupported controls are consumed here; master pressure ignored. */
+    /* Reserved zone channels cannot edit shared patches/controllers. All
+     * unsupported controls are consumed here; master pressure/CC74 are ignored. */
     return 1;
 }
