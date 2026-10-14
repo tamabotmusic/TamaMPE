@@ -72,6 +72,7 @@
 #include "engines.c"             /* dsp.c, the eng_*.c files, the factory patterns */
 #include "params.c"
 #include "mod.c"               /* the modulation matrix, used by voice.c and mix.c */
+#include "smart_macros.c"       /* runtime Smart Macro routes, used by mix.c */
 #include "voice.c"
 #include "mix.c"
 

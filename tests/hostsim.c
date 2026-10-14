@@ -52,6 +52,7 @@ static const uint8_t *cz_fac(uint32_t k)
 }
 #include "../firmware/src/params.c"
 #include "../firmware/src/mod.c"
+#include "../firmware/src/smart_macros.c"
 #include "../firmware/src/voice.c"
 #include "../firmware/src/mix.c"
 static void fm1_delay_ms(uint32_t ms) { (void)ms; }

@@ -193,6 +193,7 @@ static void mix_part(track_t *t,uint32_t n)
      * stay unchanged and zero extra sends need no extra mixing pass. */
     if(extra){memcpy(fx_bus_sum_l,mix_l,n*sizeof *mix_l);memcpy(fx_bus_sum_r,mix_r,n*sizeof *mix_r);}
     mod_begin(t);
+    smart_begin(t);
     spread_on=t->p[P_SPRD]>0 && (trk_vmode(t)==V_POLY || trk_vmode(t)==V_UNISON);
     int rendered=track_render_audio(t,part_buf,n,0);
 #if defined(MELODEE_FX_PROFILE) && MELODEE_FX_PROFILE && defined(FM1_IRQ_TARGET)
@@ -213,6 +214,7 @@ static void mix_part(track_t *t,uint32_t n)
             }
         }
     }
+    smart_end(t);
     if(mod.on)mod_end(t);
     if(extra){void (*volatile run)(uint32_t)=mix_extra_sends;run(n);}
 }

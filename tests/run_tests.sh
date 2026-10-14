@@ -263,6 +263,7 @@ if core && [ $TABLES = 1 ]; then
     t "FM6 MPE pressure: serial/dual-core PCM equality with bend" mpe_pressure_dual_test -O2 $FW -pthread
     t "FM6 MPE CC74: per-voice timbre, neutral PCM and lifecycle isolation" mpe_cc74_test -O1 $FW
     t "FM6 MPE CC74: serial/dual-core PCM equality with bend and pressure" mpe_cc74_dual_test -O2 $FW -pthread
+    t "Smart Macros phase 1: neutral PCM, block slew, FM6 MLVL and matrix isolation" smart_macro_test -O1 $FW
     t "MPE OUT: lower-zone allocation, expression, queue recovery and conventional compatibility" mpe_out_test -O1 $FW
     t "MIDI timing: quantized TRS/USB recording, audio timeline, tempo changes and timer wrap" midi_timing_test -O1 $FW
     t "MIDI recording: raw events, quantization at take end, independent releases, banks and capacity" recording_test \
