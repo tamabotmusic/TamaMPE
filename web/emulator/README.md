@@ -33,7 +33,57 @@ export EM_BINARYEN_ROOT="$wasm_root/usr"
 export EM_NODE_JS=/opt/codex/runtimes/codex-primary-runtime/dependencies/node/bin/node
 ```
 
-## Código y verificación
+## Publicación con GitHub Pages
+
+El workflow independiente `.github/workflows/web-emulator-pages.yml` se ejecuta
+al publicar cambios relevantes en `feature/web-emulator`. Usa Emscripten 3.1.69,
+genera solo los cinco encabezados DSP necesarios y ejecuta las pruebas C/WASM
+y de AudioWorklet. No necesita el SDK JieLi, no compila firmware hardware y
+no cambia los workflows de firmware existentes.
+
+`python3 web/emulator/package_pages.py` prepara `build/emulator-pages/` con:
+
+- `web/emulator/index.html`, `main.js` y `processor.js` originales.
+- `build/emulator/fm6.wasm`, conservando la ruta relativa utilizada por la página.
+- Una portada, las licencias, un archivo de fuentes del commit y `revision.txt`.
+
+Los binarios nativos, PCM de referencia, cachés y herramientas de compilación
+no se publican. Las pruebas de navegador usan el paquete bajo `/TamaMPE/`,
+igual que en una página de proyecto GitHub. El despliegue comprueba después
+la disponibilidad pública de los archivos y la revisión publicada.
+
+Pasos manuales del administrador del repositorio:
+
+1. Revisar **Settings → Pages → Build and deployment → Source** y seleccionar
+   **GitHub Actions**, si Pages no está configurado así. Este workflow no activa
+   Pages ni cambia su configuración automáticamente.
+2. Revisar las reglas del entorno **github-pages**: deben permitir despliegues
+   desde `feature/web-emulator` (y aprobar el despliegue si hay revisión requerida).
+3. Si el primer despliegue falla por configuración, corregirla y reejecutar el
+   workflow fallido desde Actions. `workflow_dispatch` puede no aparecer en la
+   interfaz hasta que el workflow exista en la rama predeterminada; no es
+   necesario fusionar ramas para ejecutar el disparador push o reejecutar un run.
+4. Abrir el enlace confirmado por el workflow en Chrome, entrar en el emulador
+   y pulsar **Activar audio**. No requiere instalar software en el Mac.
+
+GitHub Pages ofrece un solo sitio por repositorio. El workflow `nightly.yml`
+existente asume publicación desde `gh-pages`, por lo que cambiar Source a
+GitHub Actions exige decidir cómo convivirá con ese sistema antes de activarlo
+si está en uso. No se ha modificado ese workflow. El artefacto actual contiene
+únicamente el emulador y sus licencias, no el instalador ni descargas de firmware.
+No activarlo sobre un sitio existente que necesite conservar esos contenidos
+sin preparar antes una publicación conjunta o elegir otro alojamiento.
+
+Para probar localmente el artefacto publicado:
+
+```sh
+python3 web/emulator/package_pages.py
+python3 -m http.server 8000 --bind 127.0.0.1 --directory build/emulator-pages
+# En otra terminal, con Playwright instalado:
+EMULATOR_URL=http://localhost:8000/web/emulator/ node web/emulator/browser_test.mjs
+```
+
+## Motor reutilizado
 
 `fm6_bridge.c` incluye el harness existente `tests/hostsim.c`, que incluye
 directamente `eng_fm6.c`, `fm6_core.c`, la gestión de voces y la modulación del

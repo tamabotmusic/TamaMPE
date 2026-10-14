@@ -1,0 +1,132 @@
+name: FM6 emulator Pages
+
+on:
+  push:
+    branches: [feature/web-emulator]
+    paths:
+      - 'web/emulator/**'
+      - 'web/package.json'
+      - 'firmware/src/**'
+      - 'tests/hostsim.c'
+      - 'tools/gen_*.py'
+      - 'assets/**'
+      - '.github/workflows/web-emulator-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tamampe-emulator-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/feature/web-emulator'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: '3.1.69'
+          actions-cache-folder: 'emsdk-cache'
+      - name: Generate host DSP headers only
+        run: |
+          mkdir -p build/gen
+          python tools/gen_tables.py build/gen/melodee_tables.h
+          python tools/gen_fm6_patches.py build/gen/melodee_fm6.h
+          python tools/gen_cz1_factory.py build/gen/melodee_cz1.h
+          python tools/gen_prophet_factory.py build/gen/melodee_prophet_factory.h --web check
+          python tools/gen_909_tables.py build/gen/x0x_drum_tables.h
+      - name: Compile WASM and verify PCM and resampling
+        run: bash web/emulator/build.sh
+      - name: Package the static site
+        run: python web/emulator/package_pages.py
+      - name: Verify audio from the packaged site under the project prefix
+        run: |
+          npm install --prefix build/emulator-browser --no-save --package-lock=false playwright@1.58.2
+          node build/emulator-browser/node_modules/playwright/cli.js install --with-deps chromium
+          export NODE_PATH="$GITHUB_WORKSPACE/build/emulator-browser/node_modules"
+          export CHROMIUM_PATH="$(node -e 'console.log(require("playwright").chromium.executablePath())')"
+          mkdir -p build/pages-test
+          ln -s ../emulator-pages build/pages-test/TamaMPE
+          python -m http.server 8000 --bind 127.0.0.1 --directory build/pages-test > build/emulator-server.log 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          python - <<'PY'
+          import time, urllib.request
+          for attempt in range(50):
+              try:
+                  urllib.request.urlopen('http://localhost:8000/TamaMPE/').close()
+                  break
+              except OSError:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit('Static server failed to start')
+          PY
+          EMULATOR_URL=http://localhost:8000/TamaMPE/web/emulator/ node web/emulator/browser_test.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/emulator-pages
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Require explicitly configured Actions Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mode=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type) || {
+            echo '::error::Enable Pages manually in Settings → Pages before deploying.'
+            exit 1
+          }
+          if [ "$mode" != workflow ]; then
+            echo '::error::Pages Source must be GitHub Actions. Review the existing firmware site before changing it.'
+            exit 1
+          fi
+      # Pages must already be enabled; never enable/change repository settings here.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: false
+      - name: Deploy emulator
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify public deployment and assets
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          python - <<'PY'
+          import os, time, urllib.request
+          base = os.environ['PAGE_URL'].rstrip('/') + '/'
+          expected = os.environ['GITHUB_SHA']
+          for attempt in range(18):
+              try:
+                  revision = urllib.request.urlopen(base + 'revision.txt', timeout=15).read().decode().strip()
+                  if revision == expected:
+                      for path in ('web/emulator/', 'web/emulator/main.js', 'web/emulator/processor.js', 'build/emulator/fm6.wasm'):
+                          body = urllib.request.urlopen(base + path, timeout=15).read()
+                          if not body or path.endswith('.wasm') and body[:4] != b'\0asm':
+                              raise ValueError('Invalid public asset: ' + path)
+                      print('Verified published emulator:', base + 'web/emulator/')
+                      break
+              except (OSError, ValueError) as error:
+                  print(error)
+              time.sleep(10)
+          else:
+              raise SystemExit('Public emulator deployment could not be verified')
+          PY
