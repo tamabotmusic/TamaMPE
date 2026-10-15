@@ -672,11 +672,11 @@ static void key_on(uint32_t k, track_t *t)
     for (i = 0; i < n; i++) {
         uint32_t x = kb_chord[k][i];
         if (midi_local_held(t, x)) {
-            if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
+            if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on_track(t, k, i, x, 100);
             continue;
         }
         input_on(t, x, 100);
-        if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on(k, i, x, 100);
+        if (mpe_out_routing()) kb_mpe_out[k][i] = mpe_out_note_on_track(t, k, i, x, 100);
         else midi_out_event(0x09u | (0x90u | mc) << 8 | x << 16 | 100u << 24);
     }
     kb_chn[k] = (uint8_t)n;
@@ -1172,10 +1172,10 @@ static void events_block(uint32_t n)
         transport_req = 0;
     }
     mpe_maintenance();
-    mpe_out_service();
     pr = panic_req;
     panic_req = 0;
     if (pr) mpe_out_panic();
+    mpe_out_service();                              /* releases/reconfiguration win over macros */
     if (midi_in_overflow) {                            /* a lost note-off must never leave a held note */
         mi_r = mi_w;
         mpe_clear(1);
@@ -1219,6 +1219,7 @@ static void events_block(uint32_t n)
     }
     audition_tick(n);
     keyboard_block();
+    mpe_out_macro_service();
     while (mi_r != mi_w) {                            /* USB-MIDI (and TRS) in */
         uint32_t at = mi_r % MQ, pkt = midi_in_q[at], status = (pkt >> 8) & 0xFFu;
         uint32_t st = status & 0xF0u, ch = status & 0x0Fu;
