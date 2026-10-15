@@ -26,6 +26,9 @@
 #define SMART_SMR1_SIZE 140u
 #define SMART_SMR1_DATA 128u
 #define SMART_SMR1_MAGIC 0x31524D53u /* "SMR1", little-endian */
+#define SMART_SME1_SIZE 62u
+#define SMART_SME1_DATA 52u
+#define SMART_SME1_MAGIC 0x31454D53u /* "SME1", little-endian */
 /* AC79 internal SRAM is coherent between CPU0 and CPU1, but publishing a
  * sequence still needs the processor fence used by the audio-worker mailbox.
  * Host tests retain a compiler-only barrier. */
@@ -68,6 +71,10 @@ static smart_mpe_out_map_t smart_mpe_out[NTRK][SMART_MACRO_N];
 static smart_mpe_out_map_t smart_mpe_out_shadow[NTRK][SMART_MACRO_N];
 static volatile uint32_t smart_publish_seq[NTRK], smart_applied_seq[NTRK];
 static volatile uint8_t smart_reset_req[NTRK];
+/* A future SME1 is opaque.  This firmware can rename its stored project
+ * without touching the bytes, but must not silently replace it on SAVE or
+ * autosave; a later UI conversion may explicitly clear this guard. */
+static uint8_t smart_sme1_future;
 static struct {
     int16_t saved[2];
     uint8_t mask;
@@ -213,6 +220,7 @@ static void smart_macro_clear_routes(track_t *t)
     if (tr < NTRK) {
         smart_edit_begin(tr);
         memset(smart_shadow[tr], 0, sizeof smart_shadow[tr]);
+        memset(smart_mpe_out_shadow[tr], 0, sizeof smart_mpe_out_shadow[tr]);
         smart_edit_publish(tr);
         SMART_BARRIER();
         smart_reset_req[tr]++;
@@ -238,6 +246,24 @@ static int smart_snapshot_track(uint32_t tr, smart_config_t out[SMART_MACRO_N])
         if (seq & 1u) continue;
         SMART_BARRIER();
         memcpy(out, smart_shadow[tr], sizeof smart_shadow[tr]);
+        SMART_BARRIER();
+        if (smart_publish_seq[tr] == seq && !(seq & 1u)) return 1;
+    }
+    return 0;
+}
+
+/* SMR1 and SME1 are one project configuration.  Capture both under the same
+ * per-track publication sequence so an editor change cannot combine a route
+ * from one edit with an external assignment from another. */
+static int smart_snapshot_track_all(uint32_t tr, smart_config_t in[SMART_MACRO_N],
+                                    smart_mpe_out_map_t out[SMART_MACRO_N])
+{
+    for (uint32_t tries = 0; tries < 8u; tries++) {
+        uint32_t seq = smart_publish_seq[tr];
+        if (seq & 1u) continue;
+        SMART_BARRIER();
+        memcpy(in, smart_shadow[tr], sizeof smart_shadow[tr]);
+        memcpy(out, smart_mpe_out_shadow[tr], sizeof smart_mpe_out_shadow[tr]);
         SMART_BARRIER();
         if (smart_publish_seq[tr] == seq && !(seq & 1u)) return 1;
     }
@@ -273,6 +299,54 @@ static int smart_macro_snapshot_routes(uint8_t out[SMART_SMR1_SIZE])
     return 1;
 }
 
+static void smart_sme1_off(uint8_t out[SMART_SME1_SIZE])
+{
+    memset(out, 0, SMART_SME1_SIZE);
+    smart_u32_put(out, SMART_SME1_MAGIC);
+    out[4] = 1u; out[5] = SMART_SME1_DATA;
+    smart_u32_put(out + 58u, smart_crc32(out, 58u));
+}
+
+/* Explicit little-endian bit packing: bit 0 is byte 0 bit 0.  The 26-bit
+ * records are deliberately independent of C layout and integer endianness. */
+static void smart_bits_put(uint8_t *b, uint32_t *pos, uint32_t v, uint32_t n)
+{ while (n--) { b[*pos >> 3] |= (uint8_t)((v & 1u) << (*pos & 7u)); v >>= 1; ++*pos; } }
+static uint32_t smart_bits_get(const uint8_t *b, uint32_t *pos, uint32_t n)
+{ uint32_t v=0; for (uint32_t i=0;i<n;i++,++*pos) v|=(uint32_t)((b[*pos>>3]>>(*pos&7u))&1u)<<i; return v; }
+
+/* Capture the two extensions as one coherent set.  The caller owns both
+ * output buffers, so a failed bounded retry writes no NOR record. */
+static int smart_macro_snapshot_persist(uint8_t smr[SMART_SMR1_SIZE],
+                                        uint8_t sme[SMART_SME1_SIZE])
+{
+    if (smart_sme1_future) return 0;
+    smart_smr1_off(smr); smart_sme1_off(sme);
+    for (uint32_t tr=0; tr<NTRK; tr++) {
+        smart_config_t c[SMART_MACRO_N]; smart_mpe_out_map_t e[SMART_MACRO_N];
+        if (!smart_snapshot_track_all(tr,c,e)) return 0;
+        for (uint32_t m=0;m<SMART_MACRO_N;m++) {
+            for (uint32_t r=0;r<SMART_ROUTE_N;r++) {
+                const smart_route_t *q=&c[m].route[r]; uint32_t at=8u+((tr*SMART_MACRO_N+m)*SMART_ROUTE_N+r)*4u;
+                uint32_t d=q->destination<=SMART_DST_PAN?q->destination:SMART_DST_OFF;
+                uint32_t cv=q->curve<=SMART_CURVE_EXP?q->curve:SMART_CURVE_LINEAR;
+                int32_t lo=q->lo,hi=q->hi; if(lo>hi){int32_t x=lo;lo=hi;hi=x;} if(lo>0)lo=0;if(hi<0)hi=0;
+                smr[at]=(uint8_t)(d|cv<<2); smr[at+1u]=(uint8_t)(clamp(q->depth,-63,63)+63);
+                smr[at+2u]=(uint8_t)(clamp(lo,-64,63)+64); smr[at+3u]=(uint8_t)(clamp(hi,-64,63)+64);
+            }
+            { const smart_mpe_out_map_t *q=&e[m]; uint32_t d=q->meta&3u,cv=(q->meta>>2)&3u;
+              int32_t lo=q->lo,hi=q->hi; uint32_t pos=(tr*SMART_MACRO_N+m)*26u;
+              if(d>SMART_MPE_OUT_BEND||cv>SMART_CURVE_EXP){d=0;cv=0;} if(lo>hi){int32_t x=lo;lo=hi;hi=x;}if(lo>0)lo=0;if(hi<0)hi=0;
+              smart_bits_put(sme+6u,&pos,(uint32_t)(clamp(q->depth,-127,127)+127),8u);
+              smart_bits_put(sme+6u,&pos,(uint32_t)-clamp(lo,-127,0),7u);
+              smart_bits_put(sme+6u,&pos,(uint32_t)clamp(hi,0,127),7u);
+              smart_bits_put(sme+6u,&pos,d,2u); smart_bits_put(sme+6u,&pos,cv,2u); }
+        }
+    }
+    smart_u32_put(smr+136u,smart_crc32(smr,136u));
+    smart_u32_put(sme+58u,smart_crc32(sme,58u));
+    return 1;
+}
+
 /* Invalid headers leave every route off.  A valid block can still contain a
  * malformed route; that route alone is disabled.  Restoring publishes a full
  * configuration with zero targets, then asks the ISR to discard old slew. */
@@ -302,6 +376,28 @@ static void smart_macro_restore_routes(const uint8_t in[SMART_SMR1_SIZE])
         smart_edit_publish(tr);
         SMART_BARRIER();
         smart_reset_req[tr]++;
+    }
+}
+
+/* Restore both project extensions in one publication.  An absent, corrupt or
+ * future SME1 is safely OFF; valid individual records remain independently
+ * rejectable.  Runtime target and slew state are reset by the ISR boundary. */
+static void smart_macro_restore_persist(const uint8_t smr[SMART_SMR1_SIZE],
+                                        const uint8_t sme[SMART_SME1_SIZE])
+{
+    int sv=smart_u32_get(smr)==SMART_SMR1_MAGIC&&smr[4]==1u&&smr[5]==(1u<<NTRK)-1u&&smr[6]==SMART_SMR1_DATA&&!smr[7]&&smart_u32_get(smr+136u)==smart_crc32(smr,136u);
+    int future=smart_u32_get(sme)==SMART_SME1_MAGIC&&sme[4]!=1u;
+    int ev=smart_u32_get(sme)==SMART_SME1_MAGIC&&sme[4]==1u&&sme[5]==SMART_SME1_DATA&&smart_u32_get(sme+58u)==smart_crc32(sme,58u);
+    smart_sme1_future=(uint8_t)future;
+    for(uint32_t tr=0;tr<NTRK;tr++) {
+        smart_config_t c[SMART_MACRO_N]; smart_mpe_out_map_t e[SMART_MACRO_N]; memset(c,0,sizeof c);memset(e,0,sizeof e);
+        for(uint32_t m=0;m<SMART_MACRO_N;m++) {
+            if(sv) for(uint32_t r=0;r<SMART_ROUTE_N;r++){uint32_t at=8u+((tr*SMART_MACRO_N+m)*SMART_ROUTE_N+r)*4u;uint8_t x=smr[at],d=smr[at+1u],lo=smr[at+2u],hi=smr[at+3u];uint32_t dst=x&3u,cv=(x>>2)&3u;
+                if(!(x&0xf0u)&&dst<=SMART_DST_PAN&&cv<=SMART_CURVE_EXP&&d<=126u&&lo<=127u&&hi<=127u){smart_route_t *q=&c[m].route[r];q->destination=dst;q->curve=cv;q->depth=(int8_t)((int32_t)d-63);q->lo=(int8_t)((int32_t)lo-64);q->hi=(int8_t)((int32_t)hi-64);if(q->lo>q->hi||q->lo>0||q->hi<0)memset(q,0,sizeof *q);}}
+            if(ev){uint32_t pos=(tr*SMART_MACRO_N+m)*26u,depth=smart_bits_get(sme+6u,&pos,8u),neg=smart_bits_get(sme+6u,&pos,7u),hi=smart_bits_get(sme+6u,&pos,7u),dst=smart_bits_get(sme+6u,&pos,2u),cv=smart_bits_get(sme+6u,&pos,2u);
+                if(depth<255u&&dst>SMART_MPE_OUT_OFF&&dst<=SMART_MPE_OUT_BEND&&cv<=SMART_CURVE_EXP){e[m].depth=(int8_t)((int32_t)depth-127);e[m].lo=(int8_t)-(int32_t)neg;e[m].hi=(int8_t)hi;e[m].meta=(uint8_t)(dst|cv<<2);}}
+        }
+        smart_edit_begin(tr); memcpy(smart_shadow[tr],c,sizeof c);memcpy(smart_mpe_out_shadow[tr],e,sizeof e);smart_edit_publish(tr);SMART_BARRIER();smart_reset_req[tr]++;
     }
 }
 

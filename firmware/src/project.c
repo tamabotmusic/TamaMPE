@@ -86,6 +86,8 @@ static uint8_t proj_p5_origin_value(const project_t *p,uint32_t track)
 #define PROJ_P5_OFF (PROJ_REC_OFF + RECORD_MAX * 8u)
 #define PROJ_FM6_OFF (PROJ_CZ_OFF - NTRK * FM6_PACKED)
 #define PROJ_SMR1_SIZE SMART_SMR1_SIZE
+#define PROJ_SME1_SIZE SMART_SME1_SIZE
+#define PROJ_SME1_OFF 2902u
 #define PROJ_SMR1_OFF (PROJ_FM6_OFF - PROJ_SMR1_SIZE)
 #define PROJ_P5_ORIGIN_TAG0 0x50u
 #define PROJ_P5_ORIGIN_TAG1 0x35u
@@ -94,9 +96,10 @@ typedef union { uint32_t align; uint8_t raw[PROJ_STORE_SIZE]; } project_store_t;
 _Static_assert(G_MFXTYPE == PROJ_GLOBALS && G_FXMODE==40u && G_COUNT==41u, "old global IDs and wire header stay fixed");
 _Static_assert(sizeof(project_store_t) == 13212u, "FUN17 keeps the FUN16 extent");
 _Static_assert(PROJ_SMR1_OFF == 2964u, "SMR1 uses FUN20's verified reserved extent");
+_Static_assert(PROJ_SME1_OFF == 2902u && PROJ_SME1_OFF + PROJ_SME1_SIZE == PROJ_SMR1_OFF, "SME1 occupies only FUN20's verified gap");
 _Static_assert(PROJ_SMR1_OFF + PROJ_SMR1_SIZE == PROJ_FM6_OFF, "SMR1 ends at the fixed FM6 offset");
-_Static_assert(PROJ_SMR1_OFF >= 68u + NTRK * (P_COUNT + 2u + NSTEP * 8u) + sizeof(chain_config_t) + sizeof(motion_store_t) + 2u + NTRK,
-               "SMR1 stays after FUN20's variable header");
+_Static_assert(PROJ_SME1_OFF >= 68u + NTRK * (P_COUNT + 2u + NSTEP * 8u) + sizeof(chain_config_t) + sizeof(motion_store_t) + 2u + NTRK,
+               "SME1 stays after FUN20's variable header");
 #define PROJ_DEF_SOUND 0xFFu                   /* preset byte: the track's power-on sound, no steps (kept from an
                                                 * import of before 1.0) */
 #define PROJ_DEF_KEEP 0xFEu                    /* .. the 808 DRUM sound, steps and the rest kept (old drums) */
@@ -223,7 +226,7 @@ static int proj_step_unpack(step_t *s,const uint8_t *b)
     return (meta&7u)<7u && s->probability<=101u && step_acc_valid(s);
 }
 
-static int proj_pack_smr1(project_store_t *out, const project_t *q, const uint8_t *smr1)
+static int proj_pack_ext(project_store_t *out, const project_t *q, const uint8_t *smr1, const uint8_t *sme1)
 {
     uint8_t *b = out->raw; uint32_t pos = 68u, t, i; uint32_t magic = PROJ_MAGIC, size = PROJ_STORE_SIZE, sum;
     for (t = 0; t < NTRK; t++)
@@ -268,12 +271,12 @@ static int proj_pack_smr1(project_store_t *out, const project_t *q, const uint8_
         char n[PROJ_NAME_LEN + 1u];
         memcpy(b + PROJ_NAME_OFF, n, proj_name_get(n, (const uint8_t *)q->name));
     }
-    if (smr1) memcpy(b + PROJ_SMR1_OFF, smr1, PROJ_SMR1_SIZE);
-    else if (!smart_macro_snapshot_routes(b + PROJ_SMR1_OFF)) return 0;
+    if (smr1 && sme1) { memcpy(b + PROJ_SMR1_OFF, smr1, PROJ_SMR1_SIZE); memcpy(b + PROJ_SME1_OFF, sme1, PROJ_SME1_SIZE); }
+    else if (!smart_macro_snapshot_persist(b + PROJ_SMR1_OFF, b + PROJ_SME1_OFF)) return 0;
     sum = proj_hash(b, PROJ_STORE_SIZE - 4u); memcpy(b + PROJ_STORE_SIZE - 4u, &sum, 4);
     return 1;
 }
-static int proj_pack(project_store_t *out, const project_t *q) { return proj_pack_smr1(out, q, 0); }
+static int proj_pack(project_store_t *out, const project_t *q) { return proj_pack_ext(out, q, 0, 0); }
 /* the motion of a FUN7 written with np parameters (np < P_COUNT: before the chord keys, 89) -> today's ids:
  * an event names a parameter id, and the ids from that store's P_E0 (np - 8) on moved up with P_E0, as its
  * values did (params_by_count); the ones below kept theirs */
@@ -618,7 +621,7 @@ static int project_name(uint32_t slot, char *b)
 static int project_rename(uint32_t slot, const char *name)
 {
     project_t *p = &proj_scratch;
-    uint8_t smr1[PROJ_SMR1_SIZE];
+    uint8_t smr1[PROJ_SMR1_SIZE], sme1[PROJ_SME1_SIZE];
     if (transport_busy()) {
         ui_message("STOP TO SAVE");
         return 1;
@@ -632,8 +635,9 @@ static int project_rename(uint32_t slot, const char *name)
         /* This project might not be the live one: preserve its serialized
          * routes, never the current UI shadow. */
         memcpy(smr1, proj_wire_u.raw + 8u + PROJ_SMR1_OFF, sizeof smr1);
+        memcpy(sme1, proj_wire_u.raw + 8u + PROJ_SME1_OFF, sizeof sme1);
         memcpy(proj_wire_u.raw + BANK_MOTION_OFF, bank_import_tags, sizeof bank_import_tags);
-        if (!proj_pack_smr1((project_store_t *)(proj_wire_u.raw + 8u), p, smr1)) return 2;
+        if (!proj_pack_ext((project_store_t *)(proj_wire_u.raw + 8u), p, smr1, sme1)) return 2;
         bank_checksum(proj_wire_u.raw);
     } else {
         proj_bound(p); chain_defaults(&p->chain);
@@ -775,7 +779,7 @@ static void project_load(uint32_t slot)
     if (!n) { ui_message(project_old(slot) ? "OLD FORMAT" : "EMPTY SLOT"); return; }
     if (!project_restore_runtime(&proj_scratch)) {
         if (n == BANK_STORE_SIZE) bank_restore(proj_wire_u.raw);
-        if (n == BANK_STORE_SIZE) smart_macro_restore_routes(proj_wire_u.raw + 8u + PROJ_SMR1_OFF);
+        if (n == BANK_STORE_SIZE) smart_macro_restore_persist(proj_wire_u.raw + 8u + PROJ_SMR1_OFF, proj_wire_u.raw + 8u + PROJ_SME1_OFF);
         proj_cur = (uint8_t)(slot & 3u);
     }
 }
@@ -791,6 +795,7 @@ static void project_load(uint32_t slot)
  * (set_rec, its size and magic last). P_COUNT, G_COUNT or FM6_PACKED changing changes it (the assert): convert. */
 #define TMPL_MAGIC 0x4A4C5054u                    /* "TPLJ": current template before Smart Macros */
 #define TMPL_MAGIC_SMR1 0x4B4C5054u               /* "TPLK": TPLJ core plus SMR1 */
+#define TMPL_MAGIC_SME1 0x4D4C5054u               /* "TPLM": TPLK plus SME1 */
 typedef struct {
     int16_t g[PROJ_GLOBALS];
     uint8_t sel, rsv;                             /* (G_COUNT odd: the tracks start on a word) */
@@ -815,6 +820,21 @@ typedef struct {
     uint8_t master[16];
     uint8_t smr1[SMART_SMR1_SIZE];
     uint32_t size, magic;                         /* TPLK: last, 3140 bytes */
+} tmplk_t;
+typedef struct {
+    int16_t g[PROJ_GLOBALS];
+    uint8_t sel, rsv;
+    struct { uint8_t engine, preset; int16_t p[P_COUNT]; } t[NTRK];
+    uint8_t fm6[NTRK][FM6_PACKED];
+    uint8_t fm6_fn[NTRK][FM6_NFN];
+    cz_patch_t cz[NTRK];
+    p5_patch_t p5[NTRK];
+    drum_patch_t drum[NTRK];
+    uint8_t master[16];
+    uint8_t smr1[SMART_SMR1_SIZE];
+    uint8_t sme1[SMART_SME1_SIZE];
+    uint8_t pad[2];
+    uint32_t size, magic;                         /* TPLM: last, 3204 bytes */
 } tmpl_t;
 typedef struct {
     int16_t g[PROJ_GLOBALS];
@@ -840,28 +860,29 @@ typedef struct {
 } tmpl_fx_legacy_t;
 _Static_assert(sizeof(tmplj_t) == 2u * PROJ_GLOBALS + 2u + NTRK * (2u + 2u * P_COUNT) + NTRK * (FM6_PACKED + FM6_NFN) + PROJ_CZ_BYTES + PROJ_P5_BYTES + NTRK*sizeof(drum_patch_t) + 16u + 8u,
                "template layout (P_COUNT, G_COUNT, FM6_PACKED: a conversion)");
-_Static_assert(sizeof(tmplj_t) == 3000u && sizeof(tmpl_t) == 3140u, "TPLJ and TPLK fixed extents");
+_Static_assert(sizeof(tmplj_t) == 3000u && sizeof(tmplk_t) == 3140u && sizeof(tmpl_t) == 3204u, "TPLJ, TPLK and TPLM fixed extents");
+_Static_assert(__builtin_offsetof(tmpl_t,smr1)==2992u && __builtin_offsetof(tmpl_t,sme1)==3132u && __builtin_offsetof(tmpl_t,size)==3196u && __builtin_offsetof(tmpl_t,magic)==3200u, "TPLM extension offsets");
 static struct { persist_t p; tmpl_t t; } set_rec __attribute__((section(".pool")));   /* the settings record */
 #define tmpl set_rec.t                                /* the template lives where the settings record stages it */
 _Static_assert(sizeof set_rec == sizeof(persist_t) + sizeof(tmpl_t), "the template follows the settings");
-_Static_assert(sizeof set_rec == 3744u && sizeof set_rec <= 3840u, "PER5 plus TPLK fits one NOR payload");
+_Static_assert(sizeof set_rec == 3808u && sizeof set_rec <= 3840u, "PER5 plus TPLM fits one NOR payload");
 static uint8_t tmpl_dirty;                        /* saved in RAM, not yet in flash (settings_poll) */
 static uint8_t persist_old, tmpl_old;
 static int template_old(void) { return persist_old || tmpl_old; }
 static void settings_old_accept(void) { persist_old = tmpl_old = 0; }
 
-static int template_used(void) { return tmpl.magic == TMPL_MAGIC_SMR1 && tmpl.size == sizeof tmpl; }
+static int template_used(void) { return tmpl.magic == TMPL_MAGIC_SME1 && tmpl.size == sizeof tmpl; }
 
 /* a stored template (len bytes, as tmpl_t is laid out) is today's: its size and magic, valid tones */
 static uint32_t tmpl_param_count(uint32_t len)
 {
-    return len==sizeof(tmpl_t)||len==sizeof(tmplj_t)?P_COUNT:len==sizeof(tmplj_t)-16u?117u:len==sizeof(tmplj_t)-40u?116u:len==sizeof(tmpl_fx_single_t)?108u:len==sizeof(tmpl_fx_legacy_t)?104u:0u;
+    return len==sizeof(tmpl_t)||len==sizeof(tmplk_t)||len==sizeof(tmplj_t)?P_COUNT:len==sizeof(tmplj_t)-16u?117u:len==sizeof(tmplj_t)-40u?116u:len==sizeof(tmpl_fx_single_t)?108u:len==sizeof(tmpl_fx_legacy_t)?104u:0u;
 }
 static int tmpl_blob_valid(const uint8_t *b,uint32_t len)
 {
     uint32_t np=tmpl_param_count(len),size,magic;if(!np)return 0;
     memcpy(&size,b+len-8u,4);memcpy(&magic,b+len-4u,4);
-    if(size!=len || magic!=(len==sizeof(tmpl_t)?TMPL_MAGIC_SMR1:np==P_COUNT?TMPL_MAGIC:np==117u?0x494C5054u:np==116u?0x484C5054u:np==108u?0x474C5054u:0x464C5054u))return 0;
+    if(size!=len || magic!=(len==sizeof(tmpl_t)?TMPL_MAGIC_SME1:len==sizeof(tmplk_t)?TMPL_MAGIC_SMR1:np==P_COUNT?TMPL_MAGIC:np==117u?0x494C5054u:np==116u?0x484C5054u:np==108u?0x474C5054u:0x464C5054u))return 0;
     uint32_t delta=NTRK*2u*(P_COUNT-np);
     for(uint32_t k=0;k<NTRK;k++){
         p5_patch_t p;memcpy(&p,b+__builtin_offsetof(tmpl_t,p5)-delta+k*sizeof p,sizeof p);
@@ -889,9 +910,9 @@ static int tmpl_take(const uint8_t *b,uint32_t len)
     for(uint32_t i=0;i<FX_SLOTS*FX_PARAMS;i++){uint32_t id=G_MFXTYPE+i;uint32_t v=np>=117u?b[off+native+i]:(uint32_t)GP[id].def;if(v>GP[id].max)return 0;tmpl.master[i]=(uint8_t)v;}
     tmpl.master[12]=np>=117u?b[off+native+12u]:(uint8_t)GP[G_FXRETURN].def;if(tmpl.master[12]>127u)return 0;
     tmpl.master[13]=np==P_COUNT?b[off+native+13u]:0;
-    if(len==sizeof(tmpl_t))memcpy(tmpl.smr1,b+__builtin_offsetof(tmpl_t,smr1),SMART_SMR1_SIZE);
-    else smart_smr1_off(tmpl.smr1);
-    tmpl.magic=TMPL_MAGIC_SMR1;tmpl.size=sizeof tmpl;
+    if(len==sizeof(tmpl_t)){memcpy(tmpl.smr1,b+__builtin_offsetof(tmpl_t,smr1),SMART_SMR1_SIZE);memcpy(tmpl.sme1,b+__builtin_offsetof(tmpl_t,sme1),SMART_SME1_SIZE);}
+    else { smart_smr1_off(tmpl.smr1); smart_sme1_off(tmpl.sme1); if(len==sizeof(tmplk_t))memcpy(tmpl.smr1,b+__builtin_offsetof(tmplk_t,smr1),SMART_SMR1_SIZE); }
+    tmpl.magic=TMPL_MAGIC_SME1;tmpl.size=sizeof tmpl;
     for(uint32_t k=0;k<NTRK;k++)if(!fm6_fn_ok(tmpl.fm6_fn[k]))memcpy(tmpl.fm6_fn[k],FM6_FNDEF,FM6_NFN);
     return 1;
 }
@@ -950,12 +971,12 @@ static void template_save(void)
         fm6_pack(fm6_patch[k], tmpl.fm6[k]);
         memcpy(tmpl.fm6_fn[k], fm6_fn[k], FM6_NFN);
     }
-    if (!smart_macro_snapshot_routes(tmpl.smr1)) {
+    if (!smart_macro_snapshot_persist(tmpl.smr1, tmpl.sme1)) {
         ui_message("SAVE FORMAT ERROR");
         return;
     }
     tmpl.size = sizeof tmpl;
-    tmpl.magic = TMPL_MAGIC_SMR1;
+    tmpl.magic = TMPL_MAGIC_SME1;
     tmpl_dirty = 1;
 #if MELODEE_FLASH
     if (flash_ok) {
@@ -1015,7 +1036,7 @@ static void template_load(void)
     p->sum = proj_sum(p);
     if (project_restore_runtime(p))
         return;
-    smart_macro_restore_routes(tmpl.smr1);
+    smart_macro_restore_persist(tmpl.smr1, tmpl.sme1);
     for (k = 0; k < NTRK; k++) {
         track_defaults_steps(&trk[k]);                /* every pattern empty */
         pat_last[k] = 0;
