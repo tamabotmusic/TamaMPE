@@ -173,7 +173,7 @@ static void smart_mpe_out_map_config(track_t *t, uint32_t slot, uint32_t destina
 {
     uint32_t tr = (uint32_t)(t - trk);
     smart_mpe_out_map_t *m;
-    if (tr >= NTRK || slot >= SMART_MACRO_N)
+    if (smart_sme1_future || tr >= NTRK || slot >= SMART_MACRO_N)
         return;
     if (destination > SMART_MPE_OUT_BEND || curve > SMART_CURVE_EXP)
         destination = SMART_MPE_OUT_OFF, curve = SMART_CURVE_LINEAR;
@@ -188,6 +188,7 @@ static void smart_mpe_out_map_config(track_t *t, uint32_t slot, uint32_t destina
     m->meta = (uint8_t)(destination | curve << 2);
     smart_edit_publish(tr);
 }
+static int smart_mpe_out_editable(void) { return !smart_sme1_future; }
 
 /* Only tests use this immediate hook in phase 5B.  It keeps the published
  * production path intact while retaining phase-5A's direct host-test setup. */
@@ -198,6 +199,15 @@ static void smart_mpe_out_map_test_config(track_t *t, uint32_t slot, uint32_t de
     smart_mpe_out_map_config(t, slot, destination, depth, lo, hi, curve);
     if (tr < NTRK && slot < SMART_MACRO_N)
         smart_mpe_out[tr][slot] = smart_mpe_out_shadow[tr][slot];
+}
+
+/* UI/main reads a stable shadow copy, never the ISR-owned active mapping. */
+static int smart_mpe_out_map_get(const track_t *t, uint32_t slot, smart_mpe_out_map_t *out)
+{
+    uint32_t tr=(uint32_t)(t-trk);
+    if(tr>=NTRK||slot>=SMART_MACRO_N||!out)return 0;
+    for(uint32_t tries=0;tries<8u;tries++){uint32_t seq=smart_publish_seq[tr];if(seq&1u)continue;SMART_BARRIER();*out=smart_mpe_out_shadow[tr][slot];SMART_BARRIER();if(smart_publish_seq[tr]==seq&&!(seq&1u))return 1;}
+    return 0;
 }
 
 /* Values are performance state, never part of SMR1. */

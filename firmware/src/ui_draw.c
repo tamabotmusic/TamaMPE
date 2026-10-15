@@ -752,11 +752,26 @@ static void draw_columns(void)
             draw_column(1, "ROUTE", ui.smart_route ? "B" : "A", "/2", VAL(1u), ui.smart_route ? 1000 : 0, ICON_AUTO);
             draw_column(2, "DEST", dst, "", r && r->destination ? VAL(2u) : T_DIM, -1, ICON_AUTO);
             fmt_int(val, r ? r->depth : 0); draw_column(3, "DEPTH", val, "", r && r->depth ? VAL(3u) : T_DIM, -1, ICON_AUTO);
-        } else {
+        } else if (ui.smart_mode == 2u) {
             fmt_int(val, r ? r->lo : 0); draw_column(0, "MIN", val, "", VAL(0u), r ? (r->lo + 64) * 1000 / 127 : 0, ICON_AUTO);
             fmt_int(val, r ? r->hi : 0); draw_column(1, "MAX", val, "", VAL(1u), r ? (r->hi + 64) * 1000 / 127 : 0, ICON_AUTO);
             draw_column(2, "CURVE", !r || r->curve == SMART_CURVE_LINEAR ? "LINEAR" : r->curve == SMART_CURVE_SMOOTH ? "SMOOTH" : "EXP", "", VAL(2u), -1, ICON_AUTO);
             draw_column(3, "EDIT", "LIMITS", "", T_THEME, -1, ICON_AUTO);
+        } else {
+            smart_mpe_out_map_t m={0,0,0,0}; uint32_t ok=smart_mpe_out_map_get(TSEL,ui.smart_slot,&m),d=m.meta&3u,cv=(m.meta>>2)&3u;
+            const char *dst=!d?"OFF":d==SMART_MPE_OUT_CC74?"CC74":d==SMART_MPE_OUT_PRESSURE?"PRESS":"BEND";
+            char state[8]; if(!mpe_out_ui_members())str_cpy(state,"OUT OFF",sizeof state);else if(mpe_out_ui_pending())str_cpy(state,"PENDING",sizeof state);else{str_cpy(state,"OUT ",sizeof state);fmt_int(state+4,(int32_t)mpe_out_ui_members());}
+            if(ui.smart_mode==3u){
+                fmt_int(val,(int32_t)ui.smart_slot+1);draw_column(0,"OUT MAC",val,"/4",VAL(0u),ui.smart_slot*1000/3,ICON_AUTO);
+                draw_column(1,"DEST",dst,"",d?VAL(1u):T_DIM,-1,ICON_AUTO);
+                fmt_int(val,m.depth);draw_column(2,"DEPTH",val,"",m.depth?VAL(2u):T_DIM,-1,ICON_AUTO);
+                draw_column(3,"MPE OUT",state,"",T_THEME,-1,ICON_AUTO);
+            }else{
+                fmt_int(val,m.lo);draw_column(0,"OUT MIN",val,"",VAL(0u),(m.lo+127)*1000/127,ICON_AUTO);
+                fmt_int(val,m.hi);draw_column(1,"OUT MAX",val,"",VAL(1u),m.hi*1000/127,ICON_AUTO);
+                draw_column(2,"CURVE",!ok||cv==SMART_CURVE_LINEAR?"LINEAR":cv==SMART_CURVE_SMOOTH?"SMOOTH":"EXP","",VAL(2u),-1,ICON_AUTO);
+                draw_column(3,"MPE OUT",state,"",T_THEME,-1,ICON_AUTO);
+            }
         }
         return;
     }

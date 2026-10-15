@@ -1714,6 +1714,25 @@ static void library_note_sweep(const char *out)
         if(p==0u)write_ppm(out,"NIGHT",names[scene]);
     }
 }
+/* SMART MACROS has five runtime views, none represented by the generic page
+ * fixture table.  Render their extreme labels and values in every palette. */
+static void smart_macro_sweep(const char *out)
+{
+    static const char *const name[] = {"smart_play","smart_int_route","smart_int_range","smart_out_route","smart_out_range"};
+    for(uint32_t p=0;p<UI_PAL_ENTRIES;p++)for(uint32_t mode=0;mode<5u;mode++){
+        state();pal(p);eng(ENGI_FM6);go_title("SMART MACROS");
+        ui.smart_mode=(uint8_t)mode;ui.smart_slot=3u;ui.smart_route=1u;
+        smart_macro_value(TSEL,0,-127);smart_macro_value(TSEL,1,127);
+        smart_macro_route_config(TSEL,3,1,SMART_DST_PAN,-63,-64,63,SMART_CURVE_EXP);
+        smart_mpe_out_map_config(TSEL,3,mode==3u?SMART_MPE_OUT_BEND:mode==4u?SMART_MPE_OUT_PRESSURE:SMART_MPE_OUT_CC74,
+                                 mode==3u?-127:127,-127,127,mode==4u?SMART_CURVE_EXP:SMART_CURVE_SMOOTH);
+        if(mode==3u){mpe_out.members=0;mpe_out.request=4;mpe_out.setup=0;}
+        else if(mode==4u){mpe_out.members=mpe_out.request=15;mpe_out.setup=63u;}
+        else mpe_out_configure(0);
+        {char title[64];snprintf(title,sizeof title,"%s/%s",UI_PALETTES[p].name,name[mode]);cur_name=title;draw(-1);lint();if(p==UI_GRAY_INDEX)mono_check();}
+        if(!strcmp(UI_PALETTES[p].name,"NIGHT"))write_ppm(out,"NIGHT",name[mode]);
+    }
+}
 int main(int argc, char **argv)
 {
     const char *out = argc > 1 ? argv[1] : "build/ui_new";
@@ -1763,6 +1782,7 @@ int main(int argc, char **argv)
                 if (!strcmp(UI_PALETTES[p].name, SHOW[k])) write_ppm(out, SHOW[k], S_NAME[s]);
         }
     library_note_sweep(out);
+    smart_macro_sweep(out);
     designer_sweep(out);
     {   /* every FM6 chart (the lint above, fmp_check, runs on each), in MONO: gray */
         uint32_t a, e, c0 = fmp_charts;

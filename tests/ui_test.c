@@ -4547,6 +4547,19 @@ static int test_smart_macro_ui(void)
                  ui.smart_mode == 2u && r && r->lo == -37 && r->hi == 0 && r->curve == SMART_CURVE_SMOOTH);
     press(B_OCTDN);
     bad += check("SMART MACROS OCT- returns through the route editor without leaving the page", ui.smart_mode == 1u && smart_page());
+    press(B_OCTUP); press(B_OCTUP);
+    turn(EN_K1,-1); turn(EN_K2,2); turn(EN_K3,127);
+    { smart_mpe_out_map_t m={0,0,0,0}; smart_mpe_out_map_get(TSEL,0,&m);
+      bad += check("SMART MACROS OUT ROUTE selects CC74 and full signed depth without enabling MPE OUT",
+                   ui.smart_mode==3u && (m.meta&3u)==SMART_MPE_OUT_PRESSURE && m.depth==127 && !mpe_out_ui_members()); }
+    press(B_OCTUP); turn(EN_K1,-127); turn(EN_K2,127); turn(EN_K3,2);
+    { smart_mpe_out_map_t m={0,0,0,0}; smart_mpe_out_map_get(TSEL,0,&m);
+      bad += check("SMART MACROS OUT RANGE edits limits and curve independently",ui.smart_mode==4u&&m.lo==-127&&m.hi==127&&((m.meta>>2)&3u)==SMART_CURVE_EXP); }
+    press(B_OCTUP); press(B_OCTDN);
+    bad += check("SMART MACROS five views wrap in both OCT directions",ui.smart_mode==4u);
+    { smart_mpe_out_map_t before; smart_mpe_out_map_get(TSEL,0,&before); smart_sme1_future=1; turn(EN_K2,1); smart_sme1_future=0;
+      smart_mpe_out_map_t after; smart_mpe_out_map_get(TSEL,0,&after);
+      bad += check("SMART MACROS refuses OUT edits for an opaque future SME1",!memcmp(&before,&after,sizeof before) && !strcmp(ui.msg,"MPE MAP FORMAT")); }
     int32_t target = smart_macro_target(&trk[0], 0);
     track_select(1); set_engine_of(TSEL, 3); TSEL->engine = TSEL->eng_req;
     edit_param(0, 19);

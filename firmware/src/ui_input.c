@@ -745,6 +745,8 @@ static void smart_ui_route_put(uint32_t destination, int32_t depth, int32_t lo, 
 {
     smart_macro_route_config(TSEL, ui.smart_slot, ui.smart_route, destination, depth, lo, hi, curve);
 }
+static void smart_ui_out_put(uint32_t destination,int32_t depth,int32_t lo,int32_t hi,uint32_t curve)
+{ smart_mpe_out_map_config(TSEL,ui.smart_slot,destination,depth,lo,hi,curve); }
 
 static void smart_ui_knob(uint32_t slot, int32_t steps)
 {
@@ -761,17 +763,30 @@ static void smart_ui_knob(uint32_t slot, int32_t steps)
         else if (slot == 1u) ui.smart_route = (uint8_t)clamp((int32_t)ui.smart_route + steps, 0, 1);
         else if (slot == 2u) smart_ui_route_put((uint32_t)clamp((int32_t)destination + steps, 0, 2), depth, lo, hi, curve);
         else smart_ui_route_put(destination, depth + steps, lo, hi, curve);
-    } else {                                          /* limits: min, max and curve for the selected route */
+    } else if (ui.smart_mode == 2u) {                 /* limits: min, max and curve for the selected route */
         if (slot == 0u) smart_ui_route_put(destination, depth, lo + steps, hi, curve);
         else if (slot == 1u) smart_ui_route_put(destination, depth, lo, hi + steps, curve);
         else if (slot == 2u) smart_ui_route_put(destination, depth, lo, hi, (uint32_t)clamp((int32_t)curve + steps, 0, 2));
+    } else {                                          /* OUT route/range: one mapping per macro */
+        smart_mpe_out_map_t m={0,0,0,0}; smart_mpe_out_map_get(TSEL,ui.smart_slot,&m);
+        uint32_t destination=m.meta&3u,curve=(m.meta>>2)&3u;
+        if(!smart_mpe_out_editable()){ui_message("MPE MAP FORMAT");return;}
+        if(ui.smart_mode==3u){
+            if(slot==0u)ui.smart_slot=(uint8_t)clamp((int32_t)ui.smart_slot+steps,0,3);
+            else if(slot==1u)smart_ui_out_put((uint32_t)clamp((int32_t)destination+steps,0,3),m.depth,m.lo,m.hi,curve);
+            else if(slot==2u)smart_ui_out_put(destination,m.depth+steps,m.lo,m.hi,curve);
+        }else{
+            if(slot==0u)smart_ui_out_put(destination,m.depth,m.lo+steps,m.hi,curve);
+            else if(slot==1u)smart_ui_out_put(destination,m.depth,m.lo,m.hi+steps,curve);
+            else if(slot==2u)smart_ui_out_put(destination,m.depth,m.lo,m.hi,(uint32_t)clamp((int32_t)curve+steps,0,2));
+        }
     }
 }
 
 static void smart_ui_oct(uint32_t oct)
 {
-    if (oct & 2u) ui.smart_mode = (uint8_t)((ui.smart_mode + 1u) % 3u);
-    else if (oct & 1u) ui.smart_mode = (uint8_t)((ui.smart_mode + 2u) % 3u);
+    if (oct & 2u) ui.smart_mode = (uint8_t)((ui.smart_mode + 1u) % 5u);
+    else if (oct & 1u) ui.smart_mode = (uint8_t)((ui.smart_mode + 4u) % 5u);
     ui.force = 1;
 }
 
