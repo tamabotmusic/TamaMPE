@@ -18,6 +18,11 @@
 #define SMART_CURVE_LINEAR 0u
 #define SMART_CURVE_SMOOTH 1u
 #define SMART_CURVE_EXP 2u
+#define SMART_MPE_OUT_OFF 0u
+#define SMART_MPE_OUT_CC74 1u
+#define SMART_MPE_OUT_PRESSURE 2u
+#define SMART_MPE_OUT_BEND 3u
+#define SMART_MPE_OUT_N 3u
 #define SMART_SMR1_SIZE 140u
 #define SMART_SMR1_DATA 128u
 #define SMART_SMR1_MAGIC 0x31524D53u /* "SMR1", little-endian */
@@ -45,12 +50,22 @@ typedef struct {
     smart_route_t route[SMART_ROUTE_N];
 } smart_config_t;
 
+/* Runtime-only MPE OUT assignment.  It deliberately has its own storage:
+ * loading a DX7 sound or clearing SMR1 routes cannot alter external MIDI. */
+typedef struct {
+    int8_t depth, lo, hi;
+    uint8_t meta;                 /* destination 0..3, curve 0..2 */
+} smart_mpe_out_map_t;
+_Static_assert(sizeof(smart_mpe_out_map_t) == 4u, "compact MPE OUT map");
+
 /* The ISR owns smart_macro (including the slew state).  UI/main marks the
  * shadow sequence odd while it edits and even when complete.  The ISR first
  * snapshots it locally, then accepts the copy only if the sequence did not
  * change.  This is safe whether render runs on CPU0 or CPU1. */
 static smart_macro_t smart_macro[NTRK][SMART_MACRO_N];
 static smart_config_t smart_shadow[NTRK][SMART_MACRO_N];
+static smart_mpe_out_map_t smart_mpe_out[NTRK][SMART_MACRO_N];
+static smart_mpe_out_map_t smart_mpe_out_shadow[NTRK][SMART_MACRO_N];
 static volatile uint32_t smart_publish_seq[NTRK], smart_applied_seq[NTRK];
 static volatile uint8_t smart_reset_req[NTRK];
 static struct {
@@ -141,6 +156,41 @@ static void smart_macro_route(track_t *t, uint32_t slot, uint32_t destination, i
 {
     smart_macro_route_config(t, slot, 0, destination, depth, -64, 63, SMART_CURVE_LINEAR);
     smart_macro_route_config(t, slot, 1, SMART_DST_OFF, 0, -64, 63, SMART_CURVE_LINEAR);
+}
+
+/* Main-loop API for phase 5B.  The output range uses the same compact
+ * bipolar controller domain as Smart Macro routes; normalization preserves
+ * the exact neutral point for every MIDI destination. */
+static void smart_mpe_out_map_config(track_t *t, uint32_t slot, uint32_t destination,
+                                     int32_t depth, int32_t lo, int32_t hi, uint32_t curve)
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    smart_mpe_out_map_t *m;
+    if (tr >= NTRK || slot >= SMART_MACRO_N)
+        return;
+    if (destination > SMART_MPE_OUT_BEND || curve > SMART_CURVE_EXP)
+        destination = SMART_MPE_OUT_OFF, curve = SMART_CURVE_LINEAR;
+    if (lo > hi) { int32_t x = lo; lo = hi; hi = x; }
+    if (lo > 0) lo = 0;
+    if (hi < 0) hi = 0;
+    smart_edit_begin(tr);
+    m = &smart_mpe_out_shadow[tr][slot];
+    m->depth = (int8_t)clamp(depth, -127, 127);
+    m->lo = (int8_t)clamp(lo, -127, 127);
+    m->hi = (int8_t)clamp(hi, -127, 127);
+    m->meta = (uint8_t)(destination | curve << 2);
+    smart_edit_publish(tr);
+}
+
+/* Only tests use this immediate hook in phase 5B.  It keeps the published
+ * production path intact while retaining phase-5A's direct host-test setup. */
+static void smart_mpe_out_map_test_config(track_t *t, uint32_t slot, uint32_t destination,
+                                          int32_t depth, int32_t lo, int32_t hi, uint32_t curve)
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    smart_mpe_out_map_config(t, slot, destination, depth, lo, hi, curve);
+    if (tr < NTRK && slot < SMART_MACRO_N)
+        smart_mpe_out[tr][slot] = smart_mpe_out_shadow[tr][slot];
 }
 
 /* Values are performance state, never part of SMR1. */
@@ -295,6 +345,38 @@ static int32_t smart_route_value(const smart_macro_t *m, const smart_route_t *r)
     return clamp(out, r->lo, r->hi);
 }
 
+static int32_t smart_round_div(int32_t n, int32_t d)
+{ return n < 0 ? -((-n + d / 2) / d) : (n + d / 2) / d; }
+
+/* Read only ISR-owned state.  events_block consumes this complete previous
+ * block snapshot before smart_begin advances the next control value. */
+static int smart_mpe_out_values(const track_t *t, uint16_t out[SMART_MPE_OUT_N])
+{
+    uint32_t tr = (uint32_t)(t - trk);
+    int32_t sum[SMART_MPE_OUT_N] = {0, 0, 0};
+    int active = 0;
+    out[0] = out[1] = 0; out[2] = 8192;
+    if (tr >= NTRK || t->engine != ENGI_FM6 || t->eng_req != ENGI_FM6)
+        return 0;
+    for (uint32_t k = 0; k < SMART_MACRO_N; k++) {
+        const smart_mpe_out_map_t *m = &smart_mpe_out[tr][k];
+        uint32_t destination = m->meta & 3u, curve = (m->meta >> 2) & 3u;
+        int32_t value;
+        if (destination == SMART_MPE_OUT_OFF || destination > SMART_MPE_OUT_BEND ||
+            curve > SMART_CURVE_EXP || !m->depth)
+            continue;
+        value = smart_round_div(smart_curve(smart_macro[tr][k].value, curve) * m->depth, 32767);
+        sum[destination - 1u] += clamp(value, m->lo, m->hi);
+        active = 1;
+    }
+    out[0] = (uint16_t)clamp(sum[0], 0, 127);
+    out[1] = (uint16_t)clamp(sum[1], 0, 127);
+    sum[2] = clamp(sum[2], -127, 127);
+    out[2] = (uint16_t)(8192 + (sum[2] < 0 ? smart_round_div(sum[2] * 8192, 127) :
+                                                smart_round_div(sum[2] * 8191, 127)));
+    return active;
+}
+
 /* UI reads its own shadow rather than ISR state, so its cards immediately
  * reflect an edit even before the next audio control block consumes it. */
 static int32_t smart_macro_target(const track_t *t, uint32_t slot)
@@ -335,13 +417,16 @@ static __attribute__((noinline)) void smart_begin(track_t *t)
          * therefore continuous.  A concurrent edit simply leaves the last
          * complete configuration active for this block. */
         smart_config_t config[SMART_MACRO_N];
+        smart_mpe_out_map_t out[SMART_MACRO_N];
         uint32_t seq = smart_publish_seq[tr];
         memcpy(config, smart_shadow[tr], sizeof config);
+        memcpy(out, smart_mpe_out_shadow[tr], sizeof out);
         SMART_BARRIER();
         if (smart_publish_seq[tr] == seq) {
             for (k = 0; k < SMART_MACRO_N; k++) {
                 smart_macro[tr][k].target = config[k].target;
                 memcpy(smart_macro[tr][k].route, config[k].route, sizeof smart_macro[tr][k].route);
+                smart_mpe_out[tr][k] = out[k];
             }
             smart_applied_seq[tr] = seq;
         }
