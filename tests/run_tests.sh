@@ -268,6 +268,7 @@ if core && [ $TABLES = 1 ]; then
     t "MPE OUT: lower-zone allocation, expression, queue recovery and conventional compatibility" mpe_out_test -O1 $FW
     t "Smart Macro MPE OUT: per-track CC74, queue priority and safe ownership" smart_macro_mpe_out_test -O1 $FW
     t "Smart Macro MPE OUT: CC74, pressure and bend expression scheduling" smart_macro_mpe_out_expr_test -O1 $FW
+    t "MPE integration: isolated IN/OUT ownership, zone changes, panic and USB recovery" mpe_integration_stability_test -O1 $FW
     t "MIDI timing: quantized TRS/USB recording, audio timeline, tempo changes and timer wrap" midi_timing_test -O1 $FW
     t "MIDI recording: raw events, quantization at take end, independent releases, banks and capacity" recording_test \
         -O1 $FW
