@@ -77,6 +77,29 @@ static void mock_write(uint32_t r, uint32_t v)
 #define MELODEE_OTA 0
 #include "../firmware/src/usb.c"
 
+/* usb.c calls the real MPE OUT reset hook on a bus reset.  Firmware normally
+ * gets it by including mpe_out.c from seq.c; this endpoint-only harness uses
+ * usb.c directly, so compose that owner state here too.  The small models
+ * below satisfy the unrelated note/expression paths in mpe_out.c: this test
+ * executes only mpe_out_usb_reset(), and verifies its real cleanup below. */
+#define NTRK 4u
+#define ENGI_FM6 1u
+#define SMART_MPE_OUT_OFF 0u
+#define SMART_MPE_OUT_CC74 1u
+#define SMART_CURVE_LINEAR 0u
+typedef struct { uint8_t engine, eng_req; } track_t;
+typedef struct { uint8_t sel; } song_t;
+static track_t trk[NTRK];
+static song_t song;
+static uint16_t kb_mpe_out[27][4];
+static void smart_mpe_out_map_test_config(track_t *t, uint32_t macro,
+                                          uint32_t destination, int32_t depth,
+                                          int32_t lo, int32_t hi, uint32_t curve)
+{ (void)t; (void)macro; (void)destination; (void)depth; (void)lo; (void)hi; (void)curve; }
+static int smart_mpe_out_values(const track_t *t, uint16_t out[3])
+{ (void)t; out[0] = out[1] = 0; out[2] = 8192; return 0; }
+#include "../firmware/src/mpe_out.c"
+
 static void frame(uint16_t n)
 {
     common[S_FRAME1] = n & 255;
@@ -192,9 +215,13 @@ static void controls(void)
     ep0_service();
     assert(!ua_rate_pending);               /* SentStall also cancels OUT */
     setup(0x22, 1, 0x100, 2, 3);
+    mpe_out.members = 1; mpe_out.setup = 7;
+    mpe_out_owner[0].id = 1; mpe_out_channel_dirty[0] = 1; kb_mpe_out[0][0] = 1;
     common[S_INTRUSB] = 4;
     usb_poll();                            /* bus reset restores the defaults */
     assert(!ua_rate_pending && !usb.config && !ua.play_alt && !ua.cap_alt);
+    assert(!mpe_out_owner[0].id && !mpe_out_channel_dirty[0] && !kb_mpe_out[0][0] &&
+           mpe_out.setup == 0 && mpe_out.resync == 1);
     setup(0x22, 1, 0x100, 2, 3);
     assert(ep0_command == 0x60);
     usb.config = 1;
